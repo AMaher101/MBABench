@@ -6,7 +6,12 @@ export OPENROUTER_API_KEY=""
 
 # Setup DB
 export DATABASE_URL=""
-export OLD_DATABASE_URL=""
 
 # Setup Storage
 export SCRATCH_PATH=""
+
+# Setup LibreOffice. For excel recalculation before CSV extraction.
+export LIBREOFFICE_PATH=""
+
+## Optional
+export OLD_DATABASE_URL=""
