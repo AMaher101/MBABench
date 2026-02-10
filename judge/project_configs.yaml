@@ -10,3 +10,6 @@ paths:
 
   # For excel recalculation before CSV extraction.
   libreoffice_path: null
+
+miscs:
+  logger_name: "bizbench_judge"
