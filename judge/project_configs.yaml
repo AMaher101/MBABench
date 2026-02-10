@@ -13,3 +13,5 @@ paths:
 
 miscs:
   logger_name: "bizbench_judge"
+  log_to_terminal: true
+
