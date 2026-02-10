@@ -1,0 +1,12 @@
+keys:
+  open_router_api_key: null
+  database_url: null
+  # Optional: For old DB connection during migration.
+  old_database_url: null
+
+paths:
+  # For temporary storage during judging, e.g. for file extraction, intermediate files, etc.
+  scratch_path: null
+
+  # For excel recalculation before CSV extraction.
+  libreoffice_path: null
