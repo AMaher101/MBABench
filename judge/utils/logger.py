@@ -5,19 +5,20 @@ import os
 
 from misc_utils import load_project_configs
 
-DEFAULT_LOG_FORMAT = "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
+DEFAULT_LOG_FORMAT = (
+    "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
+)
 
 load_project_configs()
 logger = logging.getLogger(os.environ.get("LOGGER_NAME", "bizbench_judge"))
 logger.setLevel(logging.DEBUG)
+_logger_file_handlers: dict[str, logging.FileHandler] = {}
 
 if os.environ.get("LOG_TO_TERMINAL", "true").lower() == "true":
     _stream_handler = logging.StreamHandler()
     _stream_handler.setLevel(logging.DEBUG)
     _stream_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT))
     logger.addHandler(_stream_handler)
-
-    _logger_file_handlers: dict[str, logging.FileHandler] = {}
 
 
 def add_log_file(file_path: str, level: int = logging.DEBUG) -> None:
