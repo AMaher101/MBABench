@@ -3,6 +3,7 @@ import os
 import yaml
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "project_configs.yaml")
+_CONFIG_PATH = os.path.abspath(_CONFIG_PATH)
 
 
 def load_project_configs():
