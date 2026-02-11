@@ -15,3 +15,9 @@ miscs:
   logger_name: "bizbench_judge"
   log_to_terminal: true
 
+judge:
+  # The prompt template to use for judging. Should be a YAML file in the judge/prompts directory.
+  prompt_template: "prompts/judge_template_6_3.yaml"
+
+  # The rubric file containing subdimension and description
+  rubric: "prompts/rubrics/rubric_7.json"
