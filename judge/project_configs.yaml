@@ -1,3 +1,5 @@
+project:
+  name: "BizbenchJudge" # Used for logging and ENV vars prefixing.
 keys:
   open_router_api_key: null
   database_url: null

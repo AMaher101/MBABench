@@ -9,6 +9,8 @@ from zipfile import Path
 import openpyxl
 from logger import logger
 
+from .misc_utils import load_env_var
+
 
 def get_worksheet_info(workbook: openpyxl.Workbook, sheet_name: str) -> Dict[str, Any]:
     """Get high level information about a worksheet."""
@@ -46,10 +48,10 @@ def _get_formatted_value(cell, cell_data_only) -> str:
     if cell_data_only.value is None:
         return ""
     # Obtain parameters
-    do_rounding = os.environ.get("DO_ROUNDING", "true").lower() == "true"
+    do_rounding = load_env_var("DO_ROUNDING", "true").lower() == "true"
     if do_rounding:
-        float_rounding = int(os.environ.get("FLOAT_ROUNDING", 6))
-        percentage_rounding = int(os.environ.get("PERCENTAGE_ROUNDING", 8))
+        float_rounding = int(load_env_var("FLOAT_ROUNDING", 6))
+        percentage_rounding = int(load_env_var("PERCENTAGE_ROUNDING", 8))
 
     # Get the raw value
     raw_value = cell_data_only.value
@@ -801,9 +803,9 @@ if __name__ == "__main__":
     if args.output_dir is None:
         from misc_utils import load_project_configs, relative_path_from_project_root
 
-        configs = load_project_configs()
+        configs, project_prefix = load_project_configs()
         args.output_dir = (
-            configs.get("SCRATCH_PATH", "./scratch")
+            configs.get(f"{project_prefix}_PATHS_SCRATCH_PATH", "./scratch")
             + f"/extracted_csvs_output/{Path(args.filename).stem}"
         )
         args.output_dir = relative_path_from_project_root(args.output_dir)
