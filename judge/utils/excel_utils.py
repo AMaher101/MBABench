@@ -31,8 +31,25 @@ def load_workbooks(excel_file_path: str) -> Tuple[openpyxl.Workbook, openpyxl.Wo
 ### Cell processing functions - start
 def _get_formatted_value(cell, cell_data_only) -> str:
     """Get the formatted display value of a cell, preserving number formatting."""
+
+    def _default_value(raw_value, float_rounding: int, do_rounding: bool) -> str:
+        if isinstance(raw_value, float):
+            if do_rounding:
+                rounded_value = round(raw_value, float_rounding)
+                formatted_value = f"{rounded_value}"
+            else:
+                formatted_value = str(raw_value)
+        else:
+            formatted_value = str(raw_value)
+        return formatted_value
+
     if cell_data_only.value is None:
         return ""
+    # Obtain parameters
+    do_rounding = os.environ.get("DO_ROUNDING", "true").lower() == "true"
+    if do_rounding:
+        float_rounding = int(os.environ.get("FLOAT_ROUNDING", 6))
+        percentage_rounding = int(os.environ.get("PERCENTAGE_ROUNDING", 8))
 
     # Get the raw value
     raw_value = cell_data_only.value
@@ -70,18 +87,24 @@ def _get_formatted_value(cell, cell_data_only) -> str:
 
             # For currency, percentage, and other special formats, show the format
             if "$" in number_format or "%" in number_format or "#,##0" in number_format:
-                if "%" in number_format:
-                    raw_value = round(raw_value, 5)
+                if do_rounding:
+                    if "%" in number_format:
+                        rounded_value = round(raw_value, percentage_rounding)
+                    else:
+                        rounded_value = round(
+                            raw_value, float_rounding
+                        )  # Round for context saving purposes
+                    formatted_value = (
+                        f"{rounded_value} [{FORMAT_PREFIX}:{number_format}]"
+                    )
                 else:
-                    raw_value = round(raw_value, 3)  # Round for display purposes
-                # return f"{raw_value} [FORMAT:{number_format}]"
-                return f"{raw_value} [{FORMAT_PREFIX}:{number_format}]"
+                    formatted_value = f"{raw_value} [{FORMAT_PREFIX}:{number_format}]"
+        else:
+            formatted_value = _default_value(raw_value, float_rounding, do_rounding)
+    else:
+        formatted_value = _default_value(raw_value, float_rounding, do_rounding)
 
-    # Show only up to 3 decimal places for floats without specific formatting
-    if isinstance(raw_value, float):
-        raw_value = round(raw_value, 3)
-        return f"{raw_value:.3f}"
-    return str(raw_value)
+    return formatted_value
 
 
 def _get_excel_cell_reference(row_idx: int, col_idx: int) -> str:

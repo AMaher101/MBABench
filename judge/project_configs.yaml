@@ -21,3 +21,6 @@ judge:
 
   # The rubric file containing subdimension and description
   rubric: "prompts/rubrics/rubric_7.json"
+  do_rounding: true
+  float_rounding: 6
+  percentage_rounding: 8
