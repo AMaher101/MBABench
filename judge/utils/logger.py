@@ -3,13 +3,10 @@
 import logging
 import os
 
-from misc_utils import load_project_configs
-
 DEFAULT_LOG_FORMAT = (
     "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
 )
 
-load_project_configs()
 logger = logging.getLogger(os.environ.get("LOGGER_NAME", "bizbench_judge"))
 logger.setLevel(logging.DEBUG)
 _logger_file_handlers: dict[str, logging.FileHandler] = {}
