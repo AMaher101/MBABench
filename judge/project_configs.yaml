@@ -20,9 +20,23 @@ miscs:
 judge:
   # The prompt template to use for judging. Should be a YAML file in the judge/prompts directory.
   prompt_template: "prompts/judge_template_6_3.yaml"
+  prompt_version: "6.3"
 
   # The rubric file containing subdimension and description
   rubric: "prompts/rubrics/rubric_7.json"
+  rubric_version: "7"
   do_rounding: true
   float_rounding: 6
   percentage_rounding: 8
+
+  # Openrouter model to use for judging
+  open_router_model: "google/gemini-2.5-flash-lite"
+  # open_router_model: "google/gemini-2.5-pro"
+
+  check_order: "Accuracy,Formula,Formatting"
+
+  # Context Limit
+  default_total_char_limit: 2_000_000
+  default_solution_char_limit: 1_000_000
+  default_attempt_char_limit: 1_000_000
+
