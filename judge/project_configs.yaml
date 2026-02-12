@@ -30,13 +30,13 @@ judge:
   percentage_rounding: 8
 
   # Openrouter model to use for judging
-  open_router_model: "google/gemini-2.5-flash-lite"
+  openrouter_model: "google/gemini-2.5-flash-lite"
   # open_router_model: "google/gemini-2.5-pro"
 
   check_order: "Accuracy,Formula,Formatting"
 
   # Context Limit
-  default_total_char_limit: 2_000_000
-  default_solution_char_limit: 1_000_000
-  default_attempt_char_limit: 1_000_000
+  default_total_character_limit: 2_000_000
+  default_solution_context_char_limit: 1_000_000
+  default_attempt_context_char_limit: 1_000_000
 
