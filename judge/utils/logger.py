@@ -6,38 +6,28 @@ import os
 DEFAULT_LOG_FORMAT = (
     "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
 )
+DEFAULT_LOGGER_NAME = "bizbench_judge"
+DEFAULT_LOG_TO_TERMINAL = True
 
 _logger = None
-_logger_init_in_progress = False
 _logger_file_handlers: dict[str, logging.FileHandler] = {}
 
 
 def _get_logger():
     """Get the project logger, initializing on first access."""
-    global _logger, _logger_init_in_progress
+    global _logger
     if _logger is not None:
         return _logger
-    if _logger_init_in_progress:
-        # Recursive call during init (e.g. load_env_var logging a warning).
-        # Return the same underlying logger object by name; handlers added
-        # after init completes will apply since it's the same instance.
-        return logging.getLogger("bizbench_judge")
 
-    _logger_init_in_progress = True
-    from .misc_utils import load_env_var
-
-    _logger = logging.getLogger(
-        load_env_var("MISCS_LOGGER_NAME", default="bizbench_judge")
-    )
+    _logger = logging.getLogger(DEFAULT_LOGGER_NAME)
     _logger.setLevel(logging.DEBUG)
 
-    if str(load_env_var("MISCS_LOG_TO_TERMINAL", default="true")).lower() == "true":
+    if DEFAULT_LOG_TO_TERMINAL:
         stream_handler = logging.StreamHandler()
         stream_handler.setLevel(logging.DEBUG)
         stream_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT))
         _logger.addHandler(stream_handler)
 
-    _logger_init_in_progress = False
     return _logger
 
 
