@@ -70,7 +70,7 @@ def load_env_var(var_name: str, default=None, prefix=None, required=False):
         if not required:
             from .logger import logger
 
-            logger.warning(
+            logger.debug(
                 f"Environment variable {var_name} not set. Using default: {default}"
             )
             value = default
