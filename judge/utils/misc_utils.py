@@ -35,6 +35,7 @@ def load_project_configs():
     Env var names follow: {PROJECT_NAME}_{SECTION}_{...}_{KEY}
     where PROJECT_NAME comes from project.name in the config.
     """
+    print(f"*" * 126)
     print(f"Loading project configs from {_CONFIG_PATH}...")
     with open(_CONFIG_PATH) as f:
         config = yaml.safe_load(f)
@@ -51,11 +52,11 @@ def load_project_configs():
             print(f"Setting env var {env_key} = {value}")
             os.environ[env_key] = str(value)
             loaded_configs[env_key] = value
-
+    print(f"*" * 126)
     return loaded_configs, prefix
 
 
-def load_env_var(var_name: str, default=None, prefix=None):
+def load_env_var(var_name: str, default=None, prefix=None, required=False):
     """Helper to load an env var with optional default."""
     if prefix is None:
         with open(_CONFIG_PATH) as f:
@@ -66,12 +67,15 @@ def load_env_var(var_name: str, default=None, prefix=None):
     value = os.environ.get(var_name, None)
 
     if value is None:
-        from .logger import logger
+        if not required:
+            from .logger import logger
 
-        logger.warning(
-            f"Environment variable {var_name} not set. Using default: {default}"
-        )
-        value = default
+            logger.warning(
+                f"Environment variable {var_name} not set. Using default: {default}"
+            )
+            value = default
+        else:
+            raise EnvironmentError(f"Required environment variable {var_name} not set.")
     return value
 
 
