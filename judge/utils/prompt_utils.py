@@ -1,8 +1,11 @@
 import json
 import re
 import string
+from pathlib import Path
 
 import yaml
+
+from .excel_utils import encode_file_to_base64
 
 LETTERS = string.ascii_uppercase
 
@@ -143,6 +146,196 @@ def compile_prompt(template_path: str, **kwargs) -> list[list[dict]]:
         stages.append(current_stage)
 
     return stages
+
+
+### Message Builder Functions ################################################
+
+
+def add_file_confirmation(messages, header, prompt=None):
+    """Wrap file messages with confirmation request/response scaffolding."""
+    confirmation_msg = {
+        "role": "user",
+        "content": "Do not evaluate the files yet. Just confirm that you have received them.",
+    }
+    messages = [confirmation_msg] + messages
+    confirmation_request = {
+        "role": "user",
+        "content": f'Respond with {{"{header}": "confirmed"}} if files are received',
+    }
+    messages.append(confirmation_request)
+
+    if prompt is not None:
+        prompt = (
+            "Do not evaluate the files yet. Just confirm that you have received them.\n"
+            + prompt
+            + f'Respond with {{"{header}": "confirmed"}} if files are received\n'
+        )
+    return messages, prompt
+
+
+def format_file_section(header, files_dict, add_confirmation=False):
+    """Format a section of files for the prompt and messages.
+
+    Returns:
+        tuple: (messages, prompt, file_sizes) where file_sizes is a dict mapping
+               filename to character count for that file's content.
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": f"You will now receive the files for the {header}.",
+        }
+    ]
+    prompt = f"{header}\n"
+    sheet_num = 1
+    file_sizes = {}
+
+    for name, file_path in files_dict.items():
+        file_path = Path(file_path)
+        suffix = file_path.suffix.lower()
+
+        if name.endswith("_full.csv"):
+            base_name = name.replace("_full.csv", "")
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+            except UnicodeDecodeError:
+                base64_content, mime_type = encode_file_to_base64(file_path)
+                file_content = (
+                    f"[File content encoded as base64: {base64_content[:100]}...]"
+                )
+
+            text_content = (
+                f"Sheet {sheet_num}: {base_name} (data - CSV format):\n{file_content}"
+            )
+            messages.append(
+                {"role": "user", "content": [{"type": "text", "text": text_content}]}
+            )
+            prompt += f"Sheet {sheet_num}: {base_name} (data): {name}\n"
+            file_sizes[name] = len(text_content)
+            sheet_num += 1
+
+        elif name.endswith("_additional_format.txt"):
+            base_name = name.replace("_additional_format.txt", "")
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+            except UnicodeDecodeError:
+                base64_content, mime_type = encode_file_to_base64(file_path)
+                file_content = (
+                    f"[File content encoded as base64: {base64_content[:100]}...]"
+                )
+
+            text_content = f"    {base_name} (formatting):\n{file_content}"
+            messages.append(
+                {"role": "user", "content": [{"type": "text", "text": text_content}]}
+            )
+            prompt += f"    {base_name} (formatting): {name}\n"
+            file_sizes[name] = len(text_content)
+        else:
+            if suffix in [".txt", ".csv"]:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        file_content = f.read()
+                    text_content = f"{name}:\n{file_content}"
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": text_content}],
+                        }
+                    )
+                    file_sizes[name] = len(text_content)
+                except UnicodeDecodeError:
+                    base64_content, mime_type = encode_file_to_base64(file_path)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": f"{name}:"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime_type};base64,{base64_content}"
+                                    },
+                                },
+                            ],
+                        }
+                    )
+                    file_sizes[name] = len(f"{name}:") + len(base64_content)
+            else:
+                base64_content, mime_type = encode_file_to_base64(file_path)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"{name}:"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_content}"
+                                },
+                            },
+                        ],
+                    }
+                )
+                file_sizes[name] = len(f"{name}:") + len(base64_content)
+            prompt += f"{name}: {name}\n"
+
+    if add_confirmation:
+        messages, prompt = add_file_confirmation(messages, header, prompt)
+
+    return messages, prompt, file_sizes
+
+
+### Rubric Helper Functions #################################################
+
+
+def build_check_name_mapping(rubric_json_path: str) -> dict:
+    """Build a mapping from (category, check_letter) to rubric name.
+
+    Args:
+        rubric_json_path: Path to the rubric JSON file.
+
+    Returns:
+        dict: Mapping of (category, letter) -> name,
+              e.g., {("Accuracy", "A"): "Final Calculations"}
+    """
+    mapping = {}
+    try:
+        with open(rubric_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Support both flat-list-with-category and grouped-by-category formats
+        if isinstance(data, dict) and "rubric" in data:
+            # Old format: {"rubric": [{"category": "Accuracy", "name": "...", ...}]}
+            rubrics = data["rubric"]
+            category_items: dict[str, list] = {}
+            for rubric in rubrics:
+                category = rubric.get("category")
+                if category:
+                    if category not in category_items:
+                        category_items[category] = []
+                    category_items[category].append(rubric)
+
+            for category, items in category_items.items():
+                for idx, item in enumerate(items):
+                    if idx < len(LETTERS) and "name" in item:
+                        mapping[(category, LETTERS[idx])] = item["name"]
+        else:
+            # New format: {"Accuracy": [...], "Formula": [...], ...}
+            for category, items in data.items():
+                if isinstance(items, list):
+                    for idx, item in enumerate(items):
+                        if idx < len(LETTERS) and isinstance(item, dict) and "description" in item:
+                            name = item.get("name", item["description"][:40])
+                            mapping[(category, LETTERS[idx])] = name
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not build check name mapping: {e}")
+
+    return mapping
 
 
 if __name__ == "__main__":

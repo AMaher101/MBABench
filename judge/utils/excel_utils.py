@@ -1,14 +1,17 @@
 import argparse
+import base64
 import colorsys
 import csv
 import io
 import os
+import re
+import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from zipfile import Path
 
 import openpyxl
-from logger import logger
 
+from .logger import logger
 from .misc_utils import load_env_var
 
 
@@ -48,10 +51,10 @@ def _get_formatted_value(cell, cell_data_only) -> str:
     if cell_data_only.value is None:
         return ""
     # Obtain parameters
-    do_rounding = load_env_var("DO_ROUNDING", "true").lower() == "true"
+    do_rounding = load_env_var("JUDGE_DO_ROUNDING", "true").lower() == "true"
     if do_rounding:
-        float_rounding = int(load_env_var("FLOAT_ROUNDING", 6))
-        percentage_rounding = int(load_env_var("PERCENTAGE_ROUNDING", 8))
+        float_rounding = int(load_env_var("JUDGE_FLOAT_ROUNDING", 6))
+        percentage_rounding = int(load_env_var("JUDGE_PERCENTAGE_ROUNDING", 8))
 
     # Get the raw value
     raw_value = cell_data_only.value
@@ -677,11 +680,12 @@ def process_all_worksheets(
 
     def recalculate_xlsx(filepath: str, outdir: str = "."):
         """Re-save xlsx through LibreOffice to trigger formula calculation."""
+        ### Note: This function assumes LibreOffice is installed and added to PATH, or the path is provided through environment variable. Otherwise, call the function with run_calculation=False to skip recalculation step.
         import subprocess
 
         subprocess.run(
             [
-                os.getenv("LIBREOFFICE_PATH", "libreoffice"),
+                load_env_var("PATHS_LIBREOFFICE_PATH", required=True),
                 "--headless",
                 "--calc",
                 "--convert-to",
@@ -774,6 +778,684 @@ def process_all_worksheets(
             "output_directory": str(output_dir.absolute()),
             "all_files": all_saved_files,
         },
+    }
+
+
+### File I/O Helper Functions ###############################################
+
+
+def encode_file_to_base64(file_path: Path) -> tuple[str, str]:
+    """Encode a file to base64 and return the encoded string and MIME type."""
+    file_path = Path(file_path)
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+        base64_encoded = base64.b64encode(file_bytes).decode("utf-8")
+
+    suffix = file_path.suffix.lower()
+    mime_types = {
+        ".csv": "text/csv",
+        ".txt": "text/plain",
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }
+    mime_type = mime_types.get(suffix, "application/octet-stream")
+
+    return base64_encoded, mime_type
+
+
+def find_context_files_simple(source_dir: Path) -> Optional[Path]:
+    """Find the first text or PDF file in the source directory or task subfolder."""
+    context_files = []
+    context_files.extend(source_dir.glob("*.pdf"))
+    context_files.extend(source_dir.glob("*.txt"))
+
+    task_dir = source_dir / "task"
+    if task_dir.exists() and task_dir.is_dir():
+        context_files.extend(task_dir.glob("*.pdf"))
+        context_files.extend(task_dir.glob("*.txt"))
+
+    if not context_files:
+        return None
+
+    return context_files[0]
+
+
+def find_golden_solution_file(source_dir: Path) -> Path:
+    """Find the golden solution file in the source directory.
+
+    When multiple Excel files exist, picks the one with the shortest filename.
+    This typically selects the base solution file over versioned variants
+    (e.g., 'Solution.xlsx' over 'Solution - Q19.xlsx').
+    """
+    solution_dir = source_dir / "solution"
+    excel_exts = [".xlsx", ".xlsm", ".xls"]
+
+    # Check dedicated solution folder first
+    if solution_dir.exists() and solution_dir.is_dir():
+        excel_files = [
+            item
+            for item in solution_dir.iterdir()
+            if item.suffix.lower() in excel_exts and item.is_file()
+        ]
+        if excel_files:
+            selected = min(excel_files, key=lambda p: len(p.name))
+            if len(excel_files) > 1:
+                logger.info(
+                    f"  Multiple solution files, picking shortest: {selected.name}"
+                )
+            return selected
+
+    # Look for files with "solution" or "answer" in name
+    candidates = []
+    for item in source_dir.iterdir():
+        if item.is_file() and item.suffix.lower() in excel_exts:
+            name = item.name.lower()
+            if "solution" in name or "answer" in name:
+                candidates.append(item)
+    if candidates:
+        selected = min(candidates, key=lambda p: len(p.name))
+        if len(candidates) > 1:
+            logger.info(f"  Multiple solution files, picking shortest: {selected.name}")
+        return selected
+
+    # Fallback: first Excel file found
+    excel_files = [
+        item
+        for item in source_dir.iterdir()
+        if item.is_file() and item.suffix.lower() in excel_exts
+    ]
+    if excel_files:
+        return min(excel_files, key=lambda p: len(p.name))
+
+    raise FileNotFoundError(
+        "No golden solution Excel file found in the expected places."
+    )
+
+
+def copy_support_files(
+    source_dir: Path,
+    output_dir: Path,
+    default_rubric_path: str = None,
+    default_weights_path: str = None,
+):
+    """Copy context, rubric, and perturbations files from source to output directory.
+
+    Args:
+        source_dir: Task source directory containing original files.
+        output_dir: Destination directory for copied files.
+        default_rubric_path: Fallback path for rubric.json if not found in source_dir.
+        default_weights_path: Fallback path for rubric_weights.json if not found in source_dir.
+    """
+    copied_files = []
+
+    context_file = find_context_files_simple(source_dir)
+
+    if context_file:
+        if context_file.exists():
+            logger.info(f"Context file: {context_file.name}")
+            context_ext = context_file.suffix.lower()
+            if context_ext == ".pdf":
+                dest_path = output_dir / "context.pdf"
+            elif context_ext == ".txt":
+                dest_path = output_dir / "context.txt"
+            else:
+                dest_path = output_dir / context_file.name
+            shutil.copy(str(context_file), str(dest_path))
+            copied_files.append(str(dest_path))
+        else:
+            logger.info("Context file not found")
+
+    rubric_json_source = source_dir / "rubric.json"
+    if rubric_json_source.exists():
+        rubric_json_dest = output_dir / "rubric.json"
+        shutil.copy(str(rubric_json_source), str(rubric_json_dest))
+        copied_files.append(str(rubric_json_dest))
+    elif default_rubric_path and Path(default_rubric_path).exists():
+        rubric_json_dest = output_dir / "rubric.json"
+        shutil.copy(str(default_rubric_path), str(rubric_json_dest))
+        copied_files.append(str(rubric_json_dest))
+    else:
+        logger.error(
+            "Required file rubric.json not found in source directory or default path."
+        )
+
+    perturbations_json_source = source_dir / "perturbations.json"
+    if perturbations_json_source.exists():
+        perturbations_json_dest = output_dir / "perturbations.json"
+        shutil.copy(str(perturbations_json_source), str(perturbations_json_dest))
+        copied_files.append(str(perturbations_json_dest))
+
+    # Copy rubric weights file
+    weights_json_source = source_dir / "rubric_weights.json"
+    if weights_json_source.exists():
+        weights_json_dest = output_dir / "rubric_weights.json"
+        shutil.copy(str(weights_json_source), str(weights_json_dest))
+        copied_files.append(str(weights_json_dest))
+    elif default_weights_path and Path(default_weights_path).exists():
+        weights_json_dest = output_dir / "rubric_weights.json"
+        shutil.copy(str(default_weights_path), str(weights_json_dest))
+        copied_files.append(str(weights_json_dest))
+
+    return copied_files
+
+
+def prepare_directory_files(directory_path: str) -> dict:
+    """Prepare all CSV files and their corresponding TXT files in a directory."""
+    directory = Path(directory_path)
+    if not directory.exists() or not directory.is_dir():
+        raise NotADirectoryError(f"Not a directory: {directory}")
+
+    files_dict = {}
+    csv_files = sorted(directory.glob("*.csv"), key=lambda f: f.stat().st_ctime)
+
+    for csv_file in csv_files:
+        files_dict[csv_file.name] = str(csv_file)
+
+        base_name = csv_file.stem.replace("_full", "")
+        txt_file = directory / f"{base_name}_additional_format.txt"
+
+        if txt_file.exists():
+            files_dict[txt_file.name] = str(txt_file)
+
+    return files_dict
+
+
+def process_case_files(
+    file_paths,
+    task_folder: str,
+    use_existing: bool = False,
+    run_calculation: bool = False,
+):
+    """Process multiple Excel files into enhanced CSV files.
+
+    Args:
+        file_paths: List of Excel file paths to process
+        task_folder: Path to the task folder
+        use_existing: If True, skip processing if CSV files already exist in the output folder
+        run_calculation: If True, run Excel formula calculations before extracting CSVs.
+    """
+    workbook_dirs = {}
+
+    # Create output directory in task_folder/judge_results
+    task_path = Path(task_folder)
+    file_output_dir = task_path / "judge_results"
+    file_output_dir.mkdir(parents=True, exist_ok=True)
+
+    for file_path in file_paths:
+        logger.info(f"Processing file: {file_path}")
+        file_path = Path(file_path)
+
+        workbook_stem = file_path.stem
+        workbook_dir = file_output_dir / workbook_stem
+        workbook_dir.mkdir(parents=True, exist_ok=True)
+
+        # Check if CSV files already exist in the workbook directory
+        existing_csvs = list(workbook_dir.glob("*.csv"))
+        if use_existing and existing_csvs:
+            logger.info(
+                f"    Skipping CSV extraction (files exist): {len(existing_csvs)} CSV files found in {workbook_dir}/"
+            )
+            workbook_dirs[workbook_stem] = str(workbook_dir)
+            continue
+
+        process_all_worksheets(
+            excel_file_path=str(file_path),
+            output_dir=workbook_dir,
+            quiet=True,
+            run_calculation=run_calculation and file_path.name == "ai_attempt.xlsx",
+        )
+        workbook_dirs[workbook_stem] = str(workbook_dir)
+
+    return {
+        "folder_name": task_path.name,
+        "output_dir": file_output_dir,
+        "workbook_dirs": workbook_dirs,
+    }
+
+
+### CSV Shortening Functions ################################################
+
+
+def get_csv_dimensions(file_path: Path) -> tuple:
+    """Get the number of rows and columns in a CSV file.
+
+    Returns:
+        tuple: (rows, cols) or (None, None) if unable to read
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if not rows:
+                return (0, 0)
+            num_rows = len(rows)
+            num_cols = max(len(row) for row in rows) if rows else 0
+            return (num_rows, num_cols)
+    except Exception:
+        return (None, None)
+
+
+def _clean_csv_content(content: str) -> str:
+    """Clean CSV content by removing duplicate commas and trailing commas."""
+    lines = content.split("\n")
+    processed_lines = []
+
+    for line in lines:
+        # Collapse any sequence of 2+ commas to single comma
+        new_line = re.sub(r",{2,}", ",", line)
+        # Remove trailing commas
+        stripped_line = new_line.rstrip(",")
+        processed_lines.append(stripped_line)
+
+    return "\n".join(processed_lines)
+
+
+def _shorten_csv_files_base(
+    directory_path: Path,
+    target_chars: int,
+    steps: list,
+    keep_first_rows: int = 60,
+    keep_last_rows: int = 40,
+    min_rows_threshold: int = 100,
+    keep_first_cols: int = 50,
+    keep_last_cols: int = 25,
+    min_cols_threshold: int = 75,
+    clean_csv: bool = True,
+) -> dict:
+    """Base function to shorten CSV files in a directory using a step-based approach.
+
+    Steps are executed in order and stop early if total character count falls below target.
+
+    Returns:
+        dict with total_original, total_shortened, steps_executed, per_file info.
+    """
+    if not directory_path.exists():
+        return {
+            "total_original": 0,
+            "total_shortened": 0,
+            "steps_executed": 0,
+            "per_file": {},
+        }
+
+    # Collect file info for full CSVs and additional format txt files
+    file_infos: dict[str, dict] = {}
+    file_contents: dict[str, str] = {}
+
+    csv_files = sorted(directory_path.glob("*_full.csv"))
+    for csv_file in csv_files:
+        try:
+            with open(csv_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            rows, cols = get_csv_dimensions(csv_file)
+            file_infos[csv_file.name] = {
+                "chars": len(content),
+                "rows": rows,
+                "cols": cols,
+                "rows_redacted": 0,
+                "cols_redacted": 0,
+                "shortened_chars": len(content),
+                "original_rows": rows,
+                "original_cols": cols,
+            }
+            file_contents[csv_file.name] = content
+        except Exception:
+            pass
+
+    txt_files = sorted(directory_path.glob("*_additional_format.txt"))
+    for txt_file in txt_files:
+        try:
+            with open(txt_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            num_lines = content.count("\n") + (
+                1 if content and not content.endswith("\n") else 0
+            )
+            file_infos[txt_file.name] = {
+                "chars": len(content),
+                "rows": num_lines,
+                "cols": None,
+                "rows_redacted": 0,
+                "cols_redacted": 0,
+                "shortened_chars": len(content),
+                "original_rows": num_lines,
+                "original_cols": None,
+            }
+            file_contents[txt_file.name] = content
+        except Exception:
+            pass
+
+    if not file_infos:
+        return {
+            "total_original": 0,
+            "total_shortened": 0,
+            "steps_executed": 0,
+            "per_file": {},
+        }
+
+    total_original = sum(info["chars"] for info in file_infos.values())
+
+    def _calculate_total_chars() -> int:
+        return sum(len(content) for content in file_contents.values())
+
+    def _estimate_cleaned_chars() -> int:
+        total = 0
+        for content in file_contents.values():
+            cleaned = _clean_csv_content(content)
+            total += len(cleaned)
+        return total
+
+    def _is_under_target() -> bool:
+        current = _calculate_total_chars()
+        if clean_csv:
+            estimated_after_clean = _estimate_cleaned_chars()
+            logger.info(
+                f"    Current total chars: {current:,}. "
+                f"After cleaning: {estimated_after_clean:,}. Target: {target_chars:,}"
+            )
+            return estimated_after_clean < target_chars
+        else:
+            logger.info(
+                f"    Current total chars: {current:,}. Target: {target_chars:,}"
+            )
+            if current < target_chars:
+                logger.info("    Target met based on current chars.")
+            return current < target_chars
+
+    def _step_redact_middle_rows(
+        threshold: int = None,
+        first: int = None,
+        last: int = None,
+    ) -> None:
+        _threshold = threshold if threshold is not None else min_rows_threshold
+        _first = first if first is not None else keep_first_rows
+        _last = last if last is not None else keep_last_rows
+
+        eligible_files = [
+            f
+            for f in file_infos.keys()
+            if file_infos[f].get("rows_redacted", 0) == 0 and file_contents.get(f, "")
+        ]
+        if not eligible_files:
+            return
+
+        largest_filename = max(
+            eligible_files, key=lambda f: len(file_contents.get(f, ""))
+        )
+        content = file_contents.get(largest_filename, "")
+        if not content:
+            return
+
+        logger.info(f"    Redacting rows from file: {largest_filename}")
+        lines = content.split("\n")
+        while lines and lines[-1] == "":
+            lines.pop()
+        num_lines = len(lines)
+
+        if num_lines > _threshold:
+            first_section = lines[:_first]
+            last_section = lines[-_last:] if _last > 0 else []
+
+            first_redacted = _first + 1
+            last_redacted = num_lines - _last
+            rows_redacted = last_redacted - first_redacted + 1
+
+            redaction_msg = f"\n[Rows {first_redacted}-{last_redacted} redacted ({rows_redacted} rows)]\n"
+
+            file_contents[largest_filename] = (
+                "\n".join(first_section) + redaction_msg + "\n".join(last_section)
+            )
+            file_infos[largest_filename]["rows_redacted"] = rows_redacted
+
+    def _step_redact_middle_columns(
+        threshold: int = None,
+        first: int = None,
+        last: int = None,
+    ) -> None:
+        _threshold = threshold if threshold is not None else min_cols_threshold
+        _first = first if first is not None else keep_first_cols
+        _last = last if last is not None else keep_last_cols
+
+        eligible_files = [
+            f
+            for f in file_infos.keys()
+            if file_infos[f].get("cols_redacted", 0) == 0 and file_contents.get(f, "")
+        ]
+        if not eligible_files:
+            return
+
+        largest_filename = max(
+            eligible_files, key=lambda f: len(file_contents.get(f, ""))
+        )
+        content = file_contents.get(largest_filename, "")
+        if not content:
+            return
+
+        num_cols = file_infos[largest_filename].get("cols", 0)
+        if num_cols is None or num_cols <= _threshold:
+            return
+
+        logger.info(f"    Redacting columns from file: {largest_filename}")
+
+        lines = content.split("\n")
+        new_lines = []
+
+        first_redacted_col = _first + 1
+        last_redacted_col = num_cols - _last
+        cols_redacted = last_redacted_col - first_redacted_col + 1
+
+        for line in lines:
+            if line.startswith("[") and "redacted" in line:
+                new_lines.append(line)
+                continue
+
+            cells = line.split(",")
+            if len(cells) > _threshold:
+                first_cells = cells[:_first]
+                last_cells = cells[-_last:] if _last > 0 else []
+                redaction_msg = (
+                    f"[Columns {first_redacted_col}-{last_redacted_col} redacted]"
+                )
+                new_line = (
+                    ",".join(first_cells)
+                    + ","
+                    + redaction_msg
+                    + ","
+                    + ",".join(last_cells)
+                )
+                new_lines.append(new_line)
+            else:
+                new_lines.append(line)
+
+        file_contents[largest_filename] = "\n".join(new_lines)
+        file_infos[largest_filename]["cols_redacted"] = cols_redacted
+
+    def _step_clean_csv_content() -> None:
+        for filename in file_contents:
+            content = file_contents[filename]
+            if content:
+                file_contents[filename] = _clean_csv_content(content)
+
+    step_functions = {
+        "redact_rows": _step_redact_middle_rows,
+        "redact_cols": _step_redact_middle_columns,
+    }
+
+    steps_executed = 0
+    for step_type, step_name in steps:
+        if _is_under_target():
+            break
+        logger.info(f"    Executing step: {step_name}")
+        step_func = step_functions.get(step_type)
+        if step_func:
+            step_func()
+        steps_executed += 1
+
+    if clean_csv:
+        _step_clean_csv_content()
+
+    # Finalize: update file_infos and overwrite original files with shortened content
+    for filename, info in file_infos.items():
+        content = file_contents.get(filename, "")
+        shortened_chars = len(content)
+        info["shortened_chars"] = shortened_chars
+        info["chars_saved"] = info.get("chars", 0) - shortened_chars
+
+        if content:
+            original_path = directory_path / filename
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+    total_shortened = sum(len(content) for content in file_contents.values())
+
+    return {
+        "total_original": total_original,
+        "total_shortened": total_shortened,
+        "steps_executed": steps_executed,
+        "per_file": file_infos,
+    }
+
+
+# Default step sequences for different file types
+SOLUTION_SHORTENING_STEPS = [
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+]
+
+ATTEMPT_SHORTENING_STEPS = [
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_cols", "redact_cols"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+    ("redact_rows", "redact_rows"),
+]
+
+
+def shorten_solution_csv_files(
+    directory_path: Path,
+    target_chars: int,
+) -> dict:
+    """Shorten CSV files for golden solution context.
+
+    Uses SOLUTION_SHORTENING_STEPS sequence optimized for solution files.
+    Cleans CSV content by removing duplicate commas and trailing commas.
+    """
+    return _shorten_csv_files_base(
+        directory_path=directory_path,
+        target_chars=target_chars,
+        steps=SOLUTION_SHORTENING_STEPS,
+        clean_csv=True,
+    )
+
+
+def shorten_attempt_csv_files(
+    directory_path: Path,
+    target_chars: int,
+) -> dict:
+    """Shorten CSV files for AI attempt context.
+
+    Uses ATTEMPT_SHORTENING_STEPS sequence optimized for attempt files.
+    Does not clean CSV content (preserves original formatting).
+    """
+    return _shorten_csv_files_base(
+        directory_path=directory_path,
+        target_chars=target_chars,
+        steps=ATTEMPT_SHORTENING_STEPS,
+        clean_csv=False,
+    )
+
+
+def calculate_message_size_for_files(directory_path: Path) -> dict:
+    """Calculate the message size for all CSV files in a directory.
+
+    Returns:
+        dict: {"total": int, "per_file": {filename: {"chars": int, "rows": int, "cols": int}}}
+    """
+    total_chars = 0
+    per_file_counts = {}
+
+    if not directory_path.exists():
+        return {"total": 0, "per_file": {}}
+
+    # Count full CSV files
+    csv_files = sorted(directory_path.glob("*.csv"))
+    for csv_file in csv_files:
+        if csv_file.name.endswith("_full.csv"):
+            try:
+                with open(csv_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    char_count = len(content)
+                    total_chars += char_count
+                    rows, cols = get_csv_dimensions(csv_file)
+
+                    per_file_counts[csv_file.name] = {
+                        "chars": char_count,
+                        "rows": rows,
+                        "cols": cols,
+                    }
+            except UnicodeDecodeError:
+                base64_content, _ = encode_file_to_base64(csv_file)
+                char_count = len(base64_content)
+                total_chars += char_count
+                per_file_counts[csv_file.name] = {
+                    "chars": char_count,
+                    "rows": None,
+                    "cols": None,
+                }
+
+    # Count additional format txt files
+    txt_files = sorted(directory_path.glob("*_additional_format.txt"))
+    for txt_file in txt_files:
+        try:
+            with open(txt_file, "r", encoding="utf-8") as f:
+                content = f.read()
+                char_count = len(content)
+                total_chars += char_count
+                num_lines = content.count("\n") + (
+                    1 if content and not content.endswith("\n") else 0
+                )
+
+                per_file_counts[txt_file.name] = {
+                    "chars": char_count,
+                    "rows": num_lines,
+                    "cols": None,
+                }
+        except UnicodeDecodeError:
+            base64_content, _ = encode_file_to_base64(txt_file)
+            char_count = len(base64_content)
+            total_chars += char_count
+            per_file_counts[txt_file.name] = {
+                "chars": char_count,
+                "rows": None,
+                "cols": None,
+            }
+
+    return {
+        "total": total_chars,
+        "per_file": per_file_counts,
     }
 
 
