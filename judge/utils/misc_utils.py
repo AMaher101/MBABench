@@ -1,3 +1,4 @@
+import argparse
 import os
 from pathlib import Path
 
@@ -77,6 +78,19 @@ def load_env_var(var_name: str, default=None, prefix=None, required=False):
         else:
             raise EnvironmentError(f"Required environment variable {var_name} not set.")
     return value
+
+
+### Argparser helper
+def str2bool(v):
+    """Convert string to boolean for argparse."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 if __name__ == "__main__":
