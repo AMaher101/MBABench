@@ -4,6 +4,7 @@ import json
 import shutil
 import time
 import traceback
+import uuid
 from pathlib import Path
 
 from openai import OpenAI
@@ -17,8 +18,9 @@ from utils.excel_utils import (
     shorten_solution_csv_files,
 )
 from utils.llm_utils import calculate_cost, robust_send_message
-from utils.logger import logger
+from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
+    get_absolute_path,
     load_env_var,
     load_project_configs,
     relative_path_from_project_root,
@@ -86,6 +88,18 @@ def judge_case(
     Returns:
         dict: Dictionary with paths to ai_judgement.json and output_dir.
     """
+    # Set up logging to a cache directory first; copy to output_dir on completion
+    cache_dir = (
+        Path(load_env_var("PATHS_SCRATCH_PATH", default="scratch"))
+        / "judge_cache"
+        / f"run_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_log_path = str(cache_dir / "judge.log")
+    add_log_file(cache_log_path)
+
+    logger.info(f"Writing logs to temporary cache path: {cache_log_path}")
+
     task_folder_name = Path(task_folder).name
     PROMPT_VERSION = load_env_var("JUDGE_PROMPT_VERSION", required=True)
     RUBRIC_VERSION = load_env_var("JUDGE_RUBRIC_VERSION", required=True)
@@ -106,7 +120,6 @@ def judge_case(
     # STEP 1: Process case files
     logger.info("\n[Step 1] Processing case files...")
     task_path = Path(task_folder)
-
     try:
         golden_solution_path = find_golden_solution_file(task_path)
         logger.info(f" Golden solution file: {golden_solution_path.name}")
@@ -135,6 +148,8 @@ def judge_case(
 
     if noupload:
         logger.info("\n--noupload flag set. Skipping file preparation.")
+        remove_log_file(cache_log_path)
+        shutil.copy(cache_log_path, str(output_dir / "judge.log"))
         return
 
     # STEP 2: Prepare files for OpenRouter
@@ -509,6 +524,8 @@ def judge_case(
 
     if nocall:
         logger.info("\n--nocall flag set. Skipping API calls.")
+        remove_log_file(cache_log_path)
+        shutil.copy(cache_log_path, str(output_dir / "judge.log"))
         return
 
     # STEP 5: Make sequential OpenRouter API calls via staged conversation
@@ -749,8 +766,10 @@ def judge_case(
             )
             if info["count"] >= 1:
                 logger.info(
-                    f"    Sample failed response: {info['responses'][0][:200]}..."
+                    f"    Sample failed response: {info['responses'][0][:500]}..."
                 )
+    remove_log_file(cache_log_path)
+    shutil.copy(cache_log_path, str(output_dir / "judge.log"))
     return result
 
 
@@ -761,7 +780,7 @@ def judge_case(
 
 def main(args):
     """Main entry point that wires CLI args to judge_case."""
-    load_project_configs()
+    load_project_configs(verbose=True)
 
     # Resolve paths from config
     rubric_path = str(
@@ -869,9 +888,9 @@ if __name__ == "__main__":
     # Args preprocessing
     args = parser.parse_args()
 
-    args.folder_to_grade = str(relative_path_from_project_root(args.folder_to_grade))
+    args.folder_to_grade = get_absolute_path(args.folder_to_grade)
     if args.output_folder is not None:
-        args.output_folder = str(relative_path_from_project_root(args.output_folder))
+        args.output_folder = get_absolute_path(args.output_folder)
     else:
         args.output_folder = f"{args.folder_to_grade}/judge_results"
 
