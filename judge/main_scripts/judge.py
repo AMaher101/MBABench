@@ -710,6 +710,11 @@ def judge_case(
         "total_tokens": token_tracking["total_tokens"],
         "total_cost": round(token_tracking["total_cost"], 6),
         "elapsed_time_seconds": round(elapsed_time, 2),
+        "files_considered": {
+            "golden_solution": sorted(golden_solution_files.keys()),
+            "ai_attempt": sorted(ai_attempt_files.keys()),
+            "context": context_file_path.name if context_file_path else None,
+        },
     }
 
     if metadata_path.exists():
