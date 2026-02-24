@@ -104,11 +104,10 @@ def _get_formatted_value(cell, cell_data_only) -> str:
                     )
                 else:
                     formatted_value = f"{raw_value} [{FORMAT_PREFIX}:{number_format}]"
-        else:
-            formatted_value = _default_value(raw_value, float_rounding, do_rounding)
-    else:
-        formatted_value = _default_value(raw_value, float_rounding, do_rounding)
 
+    # If formatted value is not assigned for some reason, fallback to raw value as string
+    if "formatted_value" not in locals() or formatted_value is None:
+        formatted_value = _default_value(raw_value, float_rounding, do_rounding)
     return formatted_value
 
 
