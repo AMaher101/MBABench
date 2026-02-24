@@ -35,13 +35,6 @@ from utils.prompt_utils import (
     render_rubric_checks,
 )
 
-
-class JudgeOutputError(Exception):
-    """Raised when the judge model returns valid JSON but with an unexpected structure."""
-
-    pass
-
-
 ### Obtain constants
 load_project_configs()
 JUDGE_MODEL = load_env_var("JUDGE_OPENROUTER_MODEL", required=True)
@@ -54,6 +47,177 @@ DEFAULT_ATTEMPT_CONTEXT_CHAR_LIMIT = int(
 DEFAULT_TOTAL_CHARACTER_LIMIT = int(
     load_env_var("JUDGE_DEFAULT_TOTAL_CHARACTER_LIMIT", required=True)
 )
+RUBRIC_MAX_MISTAKES = int(
+    load_env_var("JUDGE_RUBRIC_MAX_MISTAKES", default=1),
+)
+
+### Custom Errors
+
+
+class JudgeOutputError(Exception):
+    """Raised when the judge model returns valid JSON but with an unexpected structure."""
+
+    pass
+
+
+class RubricWeightConsistencyError(Exception):
+    """Raised when rubric and weight files are inconsistent."""
+
+    pass
+
+
+### Scoring functions
+def validate_rubric_weights_consistency(rubric_path: str, weights_path: str) -> None:
+    """Validate that the rubric and weights files are consistent.
+
+    Checks:
+    1. All categories in weights exist in rubric and vice versa.
+    2. Check names within each category match between rubric and weights.
+    3. CategoryWeights has all expected categories and sums to ~1.
+
+    Raises:
+        RubricWeightConsistencyError: If any inconsistency is found.
+    """
+    with open(rubric_path, "r", encoding="utf-8") as f:
+        rubric = json.load(f)
+    with open(weights_path, "r", encoding="utf-8") as f:
+        weights = json.load(f)
+
+    expected_categories = ["Accuracy", "Formula", "Formatting"]
+    errors = []
+
+    # Check CategoryWeights
+    if "CategoryWeights" not in weights:
+        errors.append("Weights file missing 'CategoryWeights' key.")
+    else:
+        cat_weights = weights["CategoryWeights"][0]
+        for cat in expected_categories:
+            if cat not in cat_weights:
+                errors.append(f"CategoryWeights missing category: {cat}")
+        weight_sum = sum(cat_weights.get(cat, 0) for cat in expected_categories)
+        if not (0.99 <= weight_sum <= 1.01):
+            errors.append(f"CategoryWeights must sum to 1, got {weight_sum:.4f}")
+
+    # Check each category's checks match by name
+    for cat in expected_categories:
+        rubric_names = []
+        if cat in rubric:
+            if isinstance(rubric[cat], list):
+                rubric_names = [item["name"] for item in rubric[cat] if "name" in item]
+        else:
+            errors.append(f"Category '{cat}' missing from rubric file.")
+
+        weight_names = []
+        if cat in weights:
+            if isinstance(weights[cat], list):
+                weight_names = [item["name"] for item in weights[cat] if "name" in item]
+        else:
+            errors.append(f"Category '{cat}' missing from weights file.")
+
+        # Compare names
+        rubric_set = set(rubric_names)
+        weight_set = set(weight_names)
+        in_rubric_only = rubric_set - weight_set
+        in_weights_only = weight_set - rubric_set
+        if in_rubric_only:
+            errors.append(
+                f"{cat}: checks in rubric but not in weights: {sorted(in_rubric_only)}"
+            )
+        if in_weights_only:
+            errors.append(
+                f"{cat}: checks in weights but not in rubric: {sorted(in_weights_only)}"
+            )
+
+    if errors:
+        raise RubricWeightConsistencyError(
+            "Rubric/weights inconsistency:\n  " + "\n  ".join(errors)
+        )
+
+
+def calculate_check_score(mistakes: int, max_mistakes: int = 5) -> float:
+    """Calculate score for a single check, normalized to 0-1 range."""
+    raw_score = max(0, max_mistakes - mistakes)
+    return raw_score / max_mistakes
+
+
+def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) -> dict:
+    """Calculate weighted scores from judgement results and weights.
+
+    Matches checks between judgement and weights by the 'name' field.
+
+    Args:
+        all_responses: Judgement results dict {category: [check_items...]}.
+        weights: Weights dict with CategoryWeights and per-category check weights.
+        max_mistakes: Maximum mistakes before score is 0 (default 5).
+
+    Returns:
+        Dictionary with check_scores, criteria_scores, and total_score (0-100).
+    """
+    results = {"check_scores": {}, "criteria_scores": {}, "total_score": 0.0}
+    category_weights = weights["CategoryWeights"][0]
+
+    total_score = 0.0
+
+    for category in ["Accuracy", "Formula", "Formatting"]:
+        category_data = all_responses.get(category, [])
+        if not isinstance(category_data, list):
+            logger.warning(
+                f"  Skipping score for {category}: response is not a list (parse failure?). See category_data: {category_data}"
+            )
+            continue
+
+        # Build name -> mistake count from judgement
+        judgement_by_name = {}
+        for item in category_data:
+            name = item.get("name")
+            if name:
+                mistakes = item.get("total_mistakes", len(item.get("mistakes", [])))
+                judgement_by_name[name] = mistakes
+            else:
+                logger.warning(
+                    f"  Skipping item in {category} with missing name: {item}"
+                )
+
+        # Calculate scores for each check in weights
+        category_check_scores = {}
+        weighted_sum = 0.0
+        total_weight = 0.0
+
+        for check_weight in weights.get(category, []):
+            check_name = check_weight["name"]
+            weight = check_weight["weight"]
+
+            mistakes = judgement_by_name.get(check_name, 0)
+            check_score = calculate_check_score(mistakes, max_mistakes)
+            weighted_score = check_score * weight
+            weighted_sum += weighted_score
+            total_weight += weight
+
+            category_check_scores[check_name] = {
+                "mistakes": mistakes,
+                "score": check_score,
+                "weight": weight,
+                "weighted_score": weighted_score,
+            }
+
+        category_normalized_score = (
+            weighted_sum / total_weight * 100 if total_weight > 0 else 0.0
+        )
+
+        cat_weight = category_weights.get(category, 0)
+        results["check_scores"][category] = category_check_scores
+        results["criteria_scores"][category] = {
+            "weighted_sum": weighted_sum,
+            "total_weight": total_weight,
+            "normalized_score": category_normalized_score,
+            "category_weight": cat_weight,
+        }
+
+        total_score += category_normalized_score * cat_weight
+
+    results["total_score"] = round(total_score, 2)
+    return results
+
 
 ### Main Judge Function
 
@@ -63,6 +227,7 @@ def judge_case(
     client: OpenAI,
     rubric_path: str,
     template_path: str,
+    rubric_weight_path: str = None,
     model: str = JUDGE_MODEL,
     no_file_check: bool = True,
     nocall: bool = False,
@@ -127,6 +292,19 @@ def judge_case(
     )
     logger.info("=" * 80)
 
+    # STEP 0: Validate rubric/weights consistency (if weight file provided)
+    weights_data = None
+    if rubric_weight_path:
+        logger.info("\n[Step 0] Validating rubric/weights consistency...")
+        try:
+            validate_rubric_weights_consistency(rubric_path, rubric_weight_path)
+            logger.info(" Rubric and weights files are consistent.")
+            with open(rubric_weight_path, "r", encoding="utf-8") as f:
+                weights_data = json.load(f)
+        except RubricWeightConsistencyError as e:
+            logger.info(f" ERROR: {e}")
+            raise
+
     # STEP 1: Process case files
     logger.info("\n[Step 1] Processing case files...")
     task_path = Path(task_folder)
@@ -158,7 +336,9 @@ def judge_case(
             shutil.copytree(cached_solution_csv_dir, str(dest_solution_dir))
         workbook_dirs[golden_solution_stem] = str(dest_solution_dir)
 
-        cached_files = sorted(f.name for f in Path(dest_solution_dir).iterdir() if f.is_file())
+        cached_files = sorted(
+            f.name for f in Path(dest_solution_dir).iterdir() if f.is_file()
+        )
         logger.info(
             f" Copied {len(cached_files)} cached solution CSV files to: {dest_solution_dir}"
         )
@@ -597,7 +777,7 @@ def judge_case(
         conversation_messages.extend(stage_messages)
 
         # Retry loop for API call + JSON parsing
-        max_json_attempts = 5
+        max_json_attempts = 10
         parse_success = False
         response_text = None
         failed_responses = []
@@ -771,6 +951,32 @@ def judge_case(
         json.dump(all_responses, f, indent=2)
     logger.info(f" AI judgement saved to: {ai_judgement_path}")
 
+    # STEP 7: Calculate scores (if weights provided)
+    score_results = None
+    if weights_data:
+        logger.info("\n[Step 7] Calculating scores...")
+        score_results = calculate_scores(
+            all_responses, weights_data, max_mistakes=RUBRIC_MAX_MISTAKES
+        )
+
+        # Save scores
+        scores_path = output_dir / "scores.json"
+        with open(scores_path, "w", encoding="utf-8") as f:
+            json.dump(score_results, f, indent=2)
+        logger.info(f" Scores saved to: {scores_path}")
+
+        # Log score summary
+        logger.info(f"\n  Score Summary:")
+        for cat in ["Accuracy", "Formula", "Formatting"]:
+            if cat in score_results["criteria_scores"]:
+                cs = score_results["criteria_scores"][cat]
+                logger.info(
+                    f"    {cat}: {cs['normalized_score']:.2f}/100 "
+                    f"(weight: {cs['category_weight']:.2f}, "
+                    f"contribution: {cs['normalized_score'] * cs['category_weight']:.2f})"
+                )
+        logger.info(f"    TOTAL: {score_results['total_score']:.2f}/100")
+
     # Add model info to token tracking
     token_tracking["model"] = model
 
@@ -790,6 +996,7 @@ def judge_case(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "prompt_version": PROMPT_VERSION,
         "rubric_version": RUBRIC_VERSION,
+        "rubric_max_mistakes": RUBRIC_MAX_MISTAKES,
         "total_prompt_tokens": token_tracking["total_prompt_tokens"],
         "total_completion_tokens": token_tracking["total_completion_tokens"],
         "total_tokens": token_tracking["total_tokens"],
@@ -801,6 +1008,12 @@ def judge_case(
             "context": context_file_path.name if context_file_path else None,
         },
     }
+    if score_results:
+        metadata_dict["total_score"] = score_results["total_score"]
+        metadata_dict["criteria_scores"] = {
+            cat: data["normalized_score"]
+            for cat, data in score_results["criteria_scores"].items()
+        }
 
     if metadata_path.exists():
         try:
@@ -855,6 +1068,8 @@ def judge_case(
         "attempt_context_reduced": attempt_context_reduced,
         "context_reduced_details": context_reduced_details,
     }
+    if score_results:
+        result["scores"] = score_results
     if parse_failures:
         result["parse_failures"] = parse_failures
         logger.info("\nJSON Parse Failures Summary:")
@@ -893,6 +1108,14 @@ def main(args):
             )
         )
     )
+    rubric_weight_path = str(
+        relative_path_from_project_root(
+            load_env_var(
+                "JUDGE_RUBRIC_WEIGHT",
+                default="./prompts/rubrics/rubric_6_weights.json",
+            )
+        )
+    )
 
     # Initialize OpenRouter client
     api_key = load_env_var("KEYS_OPEN_ROUTER_API_KEY", required=True)
@@ -906,6 +1129,7 @@ def main(args):
         client=client,
         rubric_path=rubric_path,
         template_path=template_path,
+        rubric_weight_path=rubric_weight_path,
         model=args.model,
         nocall=args.nocall,
         noupload=args.noupload,
