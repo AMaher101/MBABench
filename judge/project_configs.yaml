@@ -25,13 +25,17 @@ judge:
   # The rubric file containing subdimension and description
   rubric: "prompts/rubrics/rubric_7.json"
   rubric_version: "7"
+  rubric_weight: "prompts/rubrics/rubric_6_weights.json"
+  rubric_weight_version: "6"
+  rubric_max_mistakes: 1
+
   do_rounding: true
   float_rounding: 6
   percentage_rounding: 8
 
   # Openrouter model to use for judging
   openrouter_model: "google/gemini-2.5-flash-lite"
-  # open_router_model: "google/gemini-2.5-pro"
+  # openrouter_model: "google/gemini-2.5-pro"
 
   check_order: "Accuracy,Formula,Formatting"
 
