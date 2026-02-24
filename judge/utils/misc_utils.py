@@ -8,6 +8,11 @@ _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "project_configs.ya
 _CONFIG_PATH = os.path.abspath(_CONFIG_PATH)
 
 
+def get_absolute_path(path) -> str:
+    """Convert a path to an absolute path."""
+    return str(Path(path).resolve())
+
+
 def relative_path_from_project_root(path) -> str:
     """Convert a path to be relative from the project root directory."""
     project_root = Path(__file__).parent.parent.resolve()
@@ -30,14 +35,15 @@ def _flatten_dict(d, prefix=""):
     return items
 
 
-def load_project_configs():
+def load_project_configs(verbose=False):
     """Load project_configs.yaml and set non-null values as environment variables.
 
     Env var names follow: {PROJECT_NAME}_{SECTION}_{...}_{KEY}
     where PROJECT_NAME comes from project.name in the config.
     """
-    print(f"*" * 126)
-    print(f"Loading project configs from {_CONFIG_PATH}...")
+    if verbose:
+        print(f"*" * 126)
+        print(f"Loading project configs from {_CONFIG_PATH}...")
     with open(_CONFIG_PATH) as f:
         config = yaml.safe_load(f)
 
@@ -50,10 +56,12 @@ def load_project_configs():
             continue
         section_prefix = f"{prefix}_{section_name.upper()}"
         for env_key, value in _flatten_dict(section, section_prefix).items():
-            print(f"Setting env var {env_key} = {value}")
+            if verbose:
+                print(f"Setting env var {env_key} = {value}")
             os.environ[env_key] = str(value)
             loaded_configs[env_key] = value
-    print(f"*" * 126)
+    if verbose:
+        print(f"*" * 126)
     return loaded_configs, prefix
 
 
