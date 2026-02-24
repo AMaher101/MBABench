@@ -35,6 +35,13 @@ from utils.prompt_utils import (
     render_rubric_checks,
 )
 
+
+class JudgeOutputError(Exception):
+    """Raised when the judge model returns valid JSON but with an unexpected structure."""
+
+    pass
+
+
 ### Obtain constants
 load_project_configs()
 JUDGE_MODEL = load_env_var("JUDGE_OPENROUTER_MODEL", required=True)
@@ -585,7 +592,9 @@ def judge_case(
             response_text = response.choices[0].message.content
 
             cumulative_metrics["message_size"] += metrics["message_size"]
-            cumulative_metrics["message_size_with_images"] += metrics["message_size_with_images"]
+            cumulative_metrics["message_size_with_images"] += metrics[
+                "message_size_with_images"
+            ]
             cumulative_metrics["prompt_tokens"] += metrics["prompt_tokens"]
             cumulative_metrics["completion_tokens"] += metrics["completion_tokens"]
             cumulative_metrics["total_tokens"] += metrics["total_tokens"]
@@ -597,6 +606,52 @@ def judge_case(
                     category_data = parsed_response[category]
                 else:
                     category_data = parsed_response
+
+                # Format check category_data. It must be a list of check items with 'check', 'decision', 'summary', and 'mistakes' fields.
+                # 'check', 'decision', and 'summary' are strings. 'mistakes' is a list of dictionaries. If any field is missing, enforce a retry
+                if isinstance(category_data, list):
+                    for item in category_data:
+                        if not isinstance(item, dict):
+                            raise JudgeOutputError(
+                                f"Check item is not a dictionary: {item}"
+                            )
+                        if (
+                            "check" not in item
+                            or "decision" not in item
+                            or "summary" not in item
+                            or "mistakes" not in item
+                        ):
+                            missing_fields = [
+                                field
+                                for field in [
+                                    "check",
+                                    "decision",
+                                    "summary",
+                                    "mistakes",
+                                ]
+                                if field not in item
+                            ]
+                            raise JudgeOutputError(
+                                f"Check item missing required fields: {missing_fields}. Item: {item}"
+                            )
+                        if (
+                            not isinstance(item["check"], str)
+                            or not isinstance(item["decision"], str)
+                            or not isinstance(item["summary"], str)
+                            or not isinstance(item["mistakes"], list)
+                        ):
+                            raise JudgeOutputError(
+                                f"Check item has incorrect field types: {item}"
+                            )
+                        for mistake in item["mistakes"]:
+                            if not isinstance(mistake, dict):
+                                raise JudgeOutputError(
+                                    f"Mistake item is not a dictionary: {mistake}"
+                                )
+                else:
+                    raise JudgeOutputError(
+                        f"Category data is not a list: {category_data}"
+                    )
 
                 # Enrich each check item with its name if available
                 if isinstance(category_data, list):
@@ -610,7 +665,7 @@ def judge_case(
                 all_responses[category] = category_data
                 parse_success = True
                 break
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, JudgeOutputError) as e:
                 traceback.print_exc()
                 failed_responses.append(response_text)
                 parse_failures[category] = {
@@ -620,8 +675,8 @@ def judge_case(
                 }
                 if json_attempt < max_json_attempts - 1:
                     logger.info(
-                        f"   JSON parse attempt {json_attempt + 1}/{max_json_attempts} "
-                        f"failed for {category}. Response: {response_text[:200]}... retrying..."
+                        f"   Parse/validation attempt {json_attempt + 1}/{max_json_attempts} "
+                        f"failed for {category}: {e}. Response: {response_text[:200]}... retrying..."
                     )
                     time.sleep(2)
 
@@ -651,7 +706,9 @@ def judge_case(
         )
         token_tracking["evaluations"][category]["cost"] = cost_info["total_cost"]
         token_tracking["total_message_size"] += cumulative_metrics["message_size"]
-        token_tracking["total_message_size_with_images"] += cumulative_metrics["message_size_with_images"]
+        token_tracking["total_message_size_with_images"] += cumulative_metrics[
+            "message_size_with_images"
+        ]
         token_tracking["total_tokens"] += cumulative_metrics["total_tokens"]
         token_tracking["total_prompt_tokens"] += cumulative_metrics["prompt_tokens"]
         token_tracking["total_completion_tokens"] += cumulative_metrics[
