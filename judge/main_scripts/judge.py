@@ -73,6 +73,7 @@ def judge_case(
     total_character_limit: int = DEFAULT_TOTAL_CHARACTER_LIMIT,
     attempt_model: str = None,
     run_calculation: bool = False,
+    cached_solution_csv_dir: str = None,
 ):
     """Execute the complete judging workflow for a case using OpenRouter.
 
@@ -91,6 +92,8 @@ def judge_case(
         total_character_limit: Total character limit for combined solution + attempt.
         attempt_model: Name of the AI model that generated the attempt being judged.
         run_calculation: If True, run Excel formula calculations before extracting CSVs.
+        cached_solution_csv_dir: Path to a directory containing pre-extracted solution CSVs.
+            When provided, skips solution xlsx CSV extraction and copies from this cache instead.
 
     Returns:
         dict: Dictionary with paths to ai_judgement.json and output_dir.
@@ -135,15 +138,43 @@ def judge_case(
         raise
 
     ai_attempt_path = task_path / "ai_attempt.xlsx"
+    golden_solution_stem = golden_solution_path.stem
 
-    file_paths = [str(ai_attempt_path), str(golden_solution_path)]
-    result = process_case_files(
-        file_paths,
-        task_folder,
-        use_existing=use_existing,
-        run_calculation=run_calculation,
-    )
-    output_dir = result["output_dir"]
+    if cached_solution_csv_dir:
+        # Reuse cached solution CSVs — only extract the AI attempt
+        logger.info(f" Using cached solution CSVs from: {cached_solution_csv_dir}")
+        result = process_case_files(
+            [str(ai_attempt_path)],
+            task_folder,
+            use_existing=True,
+            run_calculation=run_calculation,
+        )
+        output_dir = result["output_dir"]
+        workbook_dirs = result.get("workbook_dirs", {})
+
+        # Copy cached solution CSVs into the output directory
+        dest_solution_dir = output_dir / golden_solution_stem
+        if not dest_solution_dir.exists():
+            shutil.copytree(cached_solution_csv_dir, str(dest_solution_dir))
+        workbook_dirs[golden_solution_stem] = str(dest_solution_dir)
+
+        cached_files = sorted(f.name for f in Path(dest_solution_dir).iterdir() if f.is_file())
+        logger.info(
+            f" Copied {len(cached_files)} cached solution CSV files to: {dest_solution_dir}"
+        )
+        for fname in cached_files:
+            logger.info(f"   {fname}")
+    else:
+        file_paths = [str(ai_attempt_path), str(golden_solution_path)]
+        result = process_case_files(
+            file_paths,
+            task_folder,
+            use_existing=use_existing,
+            run_calculation=run_calculation,
+        )
+        output_dir = result["output_dir"]
+        workbook_dirs = result.get("workbook_dirs", {})
+
     logger.info(f" Files processed and saved to: {output_dir}")
 
     copied_files = copy_support_files(
@@ -162,10 +193,7 @@ def judge_case(
     # STEP 2: Prepare files for OpenRouter
     logger.info("\n[Step 2] Preparing files for OpenRouter...")
 
-    workbook_dirs = result.get("workbook_dirs", {})
     ai_attempt_dir = workbook_dirs.get("ai_attempt")
-
-    golden_solution_stem = golden_solution_path.stem
     golden_solution_dir = workbook_dirs.get(golden_solution_stem)
 
     context_pdf = output_dir / "context.pdf"
@@ -822,6 +850,7 @@ def judge_case(
     result = {
         "ai_judgement": str(ai_judgement_path),
         "output_dir": str(output_dir),
+        "solution_csv_dir": golden_solution_dir,
         "solution_context_reduced": solution_context_reduced,
         "attempt_context_reduced": attempt_context_reduced,
         "context_reduced_details": context_reduced_details,
