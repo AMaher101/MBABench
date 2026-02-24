@@ -535,6 +535,7 @@ def judge_case(
     token_tracking = {
         "evaluations": {},
         "total_message_size": 0,
+        "total_message_size_with_images": 0,
         "total_tokens": 0,
         "total_prompt_tokens": 0,
         "total_completion_tokens": 0,
@@ -567,6 +568,7 @@ def judge_case(
         failed_responses = []
         cumulative_metrics = {
             "message_size": 0,
+            "message_size_with_images": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
@@ -583,6 +585,7 @@ def judge_case(
             response_text = response.choices[0].message.content
 
             cumulative_metrics["message_size"] += metrics["message_size"]
+            cumulative_metrics["message_size_with_images"] += metrics["message_size_with_images"]
             cumulative_metrics["prompt_tokens"] += metrics["prompt_tokens"]
             cumulative_metrics["completion_tokens"] += metrics["completion_tokens"]
             cumulative_metrics["total_tokens"] += metrics["total_tokens"]
@@ -648,6 +651,7 @@ def judge_case(
         )
         token_tracking["evaluations"][category]["cost"] = cost_info["total_cost"]
         token_tracking["total_message_size"] += cumulative_metrics["message_size"]
+        token_tracking["total_message_size_with_images"] += cumulative_metrics["message_size_with_images"]
         token_tracking["total_tokens"] += cumulative_metrics["total_tokens"]
         token_tracking["total_prompt_tokens"] += cumulative_metrics["prompt_tokens"]
         token_tracking["total_completion_tokens"] += cumulative_metrics[
@@ -656,7 +660,8 @@ def judge_case(
         token_tracking["total_cost"] += cost_info["total_cost"]
 
         logger.info(
-            f"   Message size: {cumulative_metrics['message_size']:,} chars | "
+            f"   Message size: {cumulative_metrics['message_size']:,} chars "
+            f"(with images: {cumulative_metrics['message_size_with_images']:,}) | "
             f"Tokens: {cumulative_metrics['prompt_tokens']:,} prompt + "
             f"{cumulative_metrics['completion_tokens']} completion = "
             f"{cumulative_metrics['total_tokens']:,} total | "
@@ -726,7 +731,8 @@ def judge_case(
     logger.info("=" * 80)
     logger.info(f"\nToken Usage & Cost Summary:")
     logger.info(
-        f"  Total message size: {token_tracking['total_message_size']:,} characters"
+        f"  Total message size: {token_tracking['total_message_size']:,} characters "
+        f"(with images: {token_tracking['total_message_size_with_images']:,})"
     )
     logger.info(f"  Total tokens used: {token_tracking['total_tokens']:,}")
     logger.info(f"    - Prompt tokens: {token_tracking['total_prompt_tokens']:,}")
@@ -743,7 +749,8 @@ def judge_case(
         logger.info(f"\n  Evaluations:")
         for cat, data in token_tracking["evaluations"].items():
             logger.info(
-                f"    {cat}: {data['message_size']:,} chars -> "
+                f"    {cat}: {data['message_size']:,} chars "
+                f"(with images: {data.get('message_size_with_images', 0):,}) -> "
                 f"{data['total_tokens']:,} tokens "
                 f"({data.get('chars_per_token', 0):.2f} chars/token) | "
                 f"${data.get('cost', 0):.6f}"

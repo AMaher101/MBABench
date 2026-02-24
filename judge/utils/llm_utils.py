@@ -9,7 +9,7 @@ from .logger import logger
 BASE_DELAY = 1
 MAX_DELAY = 60
 RATE_LIMIT_DELAY = 30
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 10
 
 # Pricing per 1M tokens (input, output) for common OpenRouter models
 _MODEL_PRICING = {
@@ -31,24 +31,32 @@ _DEFAULT_PRICING = (10.0, 30.0)  # Fallback pricing per 1M tokens
 def calculate_message_size(messages):
     """Calculate the total string length of all messages.
 
+    Returns two counts: one for text-only content and one that also includes
+    image_url data (base64 data URIs).
+
     Args:
         messages: List of message dicts in OpenAI format
 
     Returns:
-        int: Total character count of all message content
+        dict: {"text": int, "total": int} where "text" counts only text content
+              and "total" also includes image_url data.
     """
-    total_size = 0
+    text_size = 0
+    image_size = 0
     for msg in messages:
         if isinstance(msg, dict):
             content = msg.get("content", "")
             if isinstance(content, str):
-                total_size += len(content)
+                text_size += len(content)
             elif isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict):
                         if "text" in item:
-                            total_size += len(item["text"])
-    return total_size
+                            text_size += len(item["text"])
+                        elif item.get("type") == "image_url":
+                            url = item.get("image_url", {}).get("url", "")
+                            image_size += len(url)
+    return {"text": text_size, "total": text_size + image_size}
 
 
 def calculate_cost(model, prompt_tokens, completion_tokens):
@@ -91,7 +99,8 @@ def robust_send_message(
 
     Returns:
         tuple: (response, metrics_dict) where metrics_dict contains:
-            - message_size: Total string length of input messages
+            - message_size: Character count of text-only content
+            - message_size_with_images: Character count including image_url data
             - prompt_tokens: Actual tokens used for prompt
             - completion_tokens: Actual tokens used for completion
             - total_tokens: Total tokens used
@@ -110,7 +119,7 @@ def robust_send_message(
                     messages.insert(0, system_msg)
                     api_messages.insert(0, system_msg)
 
-            message_size = calculate_message_size(api_messages)
+            size_info = calculate_message_size(api_messages)
 
             kwargs = {"model": model, "messages": api_messages}
             if response_format:
@@ -119,7 +128,8 @@ def robust_send_message(
             response = client.chat.completions.create(**kwargs)
 
             metrics = {
-                "message_size": message_size,
+                "message_size": size_info["text"],
+                "message_size_with_images": size_info["total"],
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "total_tokens": 0,
