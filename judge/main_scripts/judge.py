@@ -215,7 +215,7 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
 
         total_score += category_normalized_score * cat_weight
 
-    results["total_score"] = round(total_score, 2)
+    results["total_score"] = total_score
     return results
 
 
@@ -1070,6 +1070,18 @@ def judge_case(
     }
     if score_results:
         result["scores"] = score_results
+        result["accuracy_score"] = (
+            score_results["criteria_scores"].get("Accuracy", {}).get("normalized_score")
+        )
+        result["formula_score"] = (
+            score_results["criteria_scores"].get("Formula", {}).get("normalized_score")
+        )
+        result["formatting_score"] = (
+            score_results["criteria_scores"]
+            .get("Formatting", {})
+            .get("normalized_score")
+        )
+        result["final_score"] = score_results["total_score"]
     if parse_failures:
         result["parse_failures"] = parse_failures
         logger.info("\nJSON Parse Failures Summary:")
