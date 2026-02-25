@@ -32,8 +32,7 @@ import boto3
 import psycopg2
 import psycopg2.extras
 from openai import OpenAI
-
-from utils.logger import logger, add_log_file, remove_log_file
+from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
     load_env_var,
     load_project_configs,
@@ -290,12 +289,8 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
     ]
 
     if not xlsx_refs:
-        logger.error(
-            f"  No xlsx found in attempt_files for attempt {attempt_id}"
-        )
-        logger.error(
-            f"  attempt_files JSON: {attempt.get('attempt_files')}"
-        )
+        logger.error(f"  No xlsx found in attempt_files for attempt {attempt_id}")
+        logger.error(f"  attempt_files JSON: {attempt.get('attempt_files')}")
         return None
 
     name, source = xlsx_refs[0]
@@ -310,9 +305,7 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
     solution_refs = extract_file_refs(attempt.get("task_solution_files"))
 
     if not solution_refs:
-        logger.error(
-            f"  No files found in task_solution_files for task '{task_name}'"
-        )
+        logger.error(f"  No files found in task_solution_files for task '{task_name}'")
         logger.error(
             f"  task_solution_files JSON: {attempt.get('task_solution_files')}"
         )
@@ -341,69 +334,10 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
                 logger.error(f"  Failed to download context file '{name}': {e}")
 
     if not has_solution_xlsx:
-        logger.error(
-            f"  No solution xlsx downloaded for task '{task_name}'"
-        )
+        logger.error(f"  No solution xlsx downloaded for task '{task_name}'")
         return None
 
     return task_folder
-
-
-# ---------------------------------------------------------------------------
-# Scoring helpers
-# ---------------------------------------------------------------------------
-
-_PASS_VALUES = frozenset({"pass", "yes", "correct", "true", "1"})
-
-
-def calculate_scores(ai_judgement):
-    """Calculate numeric scores from AI judgement results.
-
-    Each category score = fraction of checks that passed (0.0 – 1.0).
-
-    Returns:
-        (scores_dict, scored_results_dict)
-    """
-    category_mapping = {
-        "Accuracy": "accuracy_grade",
-        "Formula": "formula_grade",
-        "Formatting": "format_grade",
-    }
-
-    scores = {"accuracy_grade": 0, "formula_grade": 0, "format_grade": 0}
-    scored_results = {}
-
-    for category, grade_key in category_mapping.items():
-        checks = ai_judgement.get(category, [])
-        if not isinstance(checks, list) or not checks:
-            scored_results[category] = {
-                "checks": checks,
-                "score": 0,
-                "passed": 0,
-                "total": 0,
-            }
-            continue
-
-        total = 0
-        passed = 0
-        for check in checks:
-            if not isinstance(check, dict):
-                continue
-            total += 1
-            result = check.get("result", check.get("pass", check.get("correct", "")))
-            if str(result).strip().lower() in _PASS_VALUES:
-                passed += 1
-
-        score = round(passed / total, 4) if total > 0 else 0
-        scores[grade_key] = score
-        scored_results[category] = {
-            "checks": checks,
-            "score": score,
-            "passed": passed,
-            "total": total,
-        }
-
-    return scores, scored_results
 
 
 # ---------------------------------------------------------------------------
@@ -436,9 +370,7 @@ def grade_single_attempt(
         f"Grading attempt {attempt_id} for task '{task_name}' "
         f"(task_id={attempt['task_id']})"
     )
-    logger.info(
-        f"Agent: {attempt['agent_model_name']} ({attempt['agent_model_type']})"
-    )
+    logger.info(f"Agent: {attempt['agent_model_name']} ({attempt['agent_model_type']})")
     logger.info("=" * 60)
 
     start_time = time.time()
@@ -461,6 +393,15 @@ def grade_single_attempt(
     log_path = str(task_folder / "grade_from_db.log")
     add_log_file(log_path)
 
+    # Pull rubric weight path
+    rubric_weight_path = str(
+        relative_path_from_project_root(
+            load_env_var(
+                "JUDGE_RUBRIC_WEIGHT",
+                default="./prompts/rubrics/rubric_6_weights.json",
+            )
+        )
+    )
     try:
         # Step 2: Run judge_case
         logger.info("[Judge] Running judge_case...")
@@ -469,6 +410,7 @@ def grade_single_attempt(
             client=client,
             rubric_path=rubric_path,
             template_path=template_path,
+            rubric_weight_path=rubric_weight_path,
             model=model,
             nocall=nocall,
             noupload=noupload,
@@ -518,8 +460,30 @@ def grade_single_attempt(
             with open(conversation_path) as f:
                 conversation = json.load(f)
 
-        scores, scored_results = calculate_scores(ai_judgement)
         raw_files_list = [f.name for f in output_dir.iterdir() if f.is_file()]
+
+        # Extract scores from judge_case result
+        scores = {
+            "accuracy_grade": result.get("accuracy_score") or 0,
+            "formula_grade": result.get("formula_score") or 0,
+            "format_grade": result.get("formatting_score") or 0,
+            "final_score": result.get("final_score") or 0,
+        }
+        scored_results = result.get("scores", {})
+
+        # Warn loudly if expected scores are missing from judge_case result
+        missing_scores = [
+            key
+            for key in ("accuracy_score", "formula_score", "formatting_score", "final_score")
+            if result.get(key) is None
+        ]
+        if missing_scores:
+            logger.warning(
+                f"  WARNING: judge_case returned no scores for attempt {attempt_id}! "
+                f"Missing keys: {missing_scores}. "
+                f"This likely means rubric_weight_path was not provided or weights "
+                f"calculation failed. Scores will default to 0."
+            )
 
         return {
             "attempt_id": attempt_id,
@@ -534,12 +498,8 @@ def grade_single_attempt(
             "token_tracking": token_tracking,
             "elapsed_seconds": round(elapsed, 2),
             "cost": token_tracking.get("total_cost", 0),
-            "solution_context_reduced": result.get(
-                "solution_context_reduced", False
-            ),
-            "attempt_context_reduced": result.get(
-                "attempt_context_reduced", False
-            ),
+            "solution_context_reduced": result.get("solution_context_reduced", False),
+            "attempt_context_reduced": result.get("attempt_context_reduced", False),
             "context_reduced_details": result.get("context_reduced_details"),
             "raw_files_path": str(output_dir),
             "raw_files": raw_files_list,
@@ -597,9 +557,7 @@ def write_grading_to_db(conn, attempt, result, model):
         "failed_reason": result.get("error") if is_failed else None,
         "deprecated": False,
         "deprecated_reason": None,
-        "solution_context_reduced": result.get(
-            "solution_context_reduced", False
-        ),
+        "solution_context_reduced": result.get("solution_context_reduced", False),
         "attempt_context_reduced": result.get("attempt_context_reduced", False),
         "context_reduced_details": (
             json.dumps(result["context_reduced_details"])
@@ -607,8 +565,7 @@ def write_grading_to_db(conn, attempt, result, model):
             else None
         ),
         "agentic_mode": (
-            attempt.get("agent_model_type", "").lower()
-            in ("agentic", "agent")
+            attempt.get("agent_model_type", "").lower() in ("agentic", "agent")
         ),
         "judge_version": 2,
     }
@@ -628,9 +585,7 @@ def main(args):
     # Resolve config paths
     rubric_path = str(
         relative_path_from_project_root(
-            load_env_var(
-                "JUDGE_RUBRIC", default="./prompts/rubrics/rubric_7.json"
-            )
+            load_env_var("JUDGE_RUBRIC", default="./prompts/rubrics/rubric_7.json")
         )
     )
     template_path = str(
@@ -670,9 +625,7 @@ def main(args):
         # Fetch attempts
         if args.attempt_ids:
             attempts = fetch_attempts_by_ids(conn, args.attempt_ids)
-            logger.info(
-                f"Fetched {len(attempts)} attempts by IDs: {args.attempt_ids}"
-            )
+            logger.info(f"Fetched {len(attempts)} attempts by IDs: {args.attempt_ids}")
         elif args.task_ids:
             attempts = fetch_attempts_by_task_ids(conn, args.task_ids)
             logger.info(
@@ -777,15 +730,9 @@ def main(args):
                 solution_csv_cache[task_id] = str(task_cache_dir)
 
             # Write to DB
-            if (
-                not args.no_db_write
-                and result["success"]
-                and not result.get("skipped")
-            ):
+            if not args.no_db_write and result["success"] and not result.get("skipped"):
                 try:
-                    grading_id = write_grading_to_db(
-                        conn, attempt, result, model
-                    )
+                    grading_id = write_grading_to_db(conn, attempt, result, model)
                     result["grading_id"] = grading_id
                     logger.info(f"  Wrote grading to DB: id={grading_id}")
                 except Exception as e:
