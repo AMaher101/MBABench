@@ -360,6 +360,7 @@ def grade_single_attempt(
     attempt_char_limit=None,
     total_char_limit=None,
     cached_solution_csv_dir=None,
+    attempt_sheet_name_filter=True,
 ):
     """Grade a single attempt. Returns a result dict."""
     attempt_id = attempt["attempt_id"]
@@ -417,6 +418,7 @@ def grade_single_attempt(
             run_calculation=run_calculation,
             attempt_model=attempt["agent_model_name"],
             cached_solution_csv_dir=cached_solution_csv_dir,
+            attempt_sheet_name_filter=attempt_sheet_name_filter,
         )
         if solution_char_limit is not None:
             judge_kwargs["solution_context_char_limit"] = solution_char_limit
@@ -706,6 +708,28 @@ def main(args):
                     f"Processing attempt {attempt['attempt_id']}..."
                 )
 
+            # Warn if sheet name filtering is on for human attempts
+            attempt_filter = args.attempt_sheet_name_filter
+            if attempt_filter and attempt.get("agent_model_type", "").lower() == "human":
+                logger.warning(
+                    f"  WARNING: attempt_sheet_name_filter is enabled but attempt "
+                    f"{attempt['attempt_id']} has agent_model_type='human'. "
+                    f"Sheet name filtering may not be appropriate for human attempts."
+                )
+                try:
+                    response = input("  Continue grading this attempt? [y/N]: ").strip().lower()
+                except EOFError:
+                    response = "n"
+                if response != "y":
+                    logger.info(f"  Skipping attempt {attempt['attempt_id']}")
+                    results.append({
+                        "attempt_id": attempt["attempt_id"],
+                        "task_id": attempt["task_id"],
+                        "success": False,
+                        "error": "Skipped — human attempt with sheet name filter enabled",
+                    })
+                    continue
+
             result = grade_single_attempt(
                 attempt=attempt,
                 client=client,
@@ -721,6 +745,7 @@ def main(args):
                 attempt_char_limit=args.attempt_char_limit,
                 total_char_limit=args.total_char_limit,
                 cached_solution_csv_dir=cached_dir,
+                attempt_sheet_name_filter=attempt_filter,
             )
             results.append(result)
 
@@ -900,6 +925,15 @@ Examples:
         "--run-calculation",
         action="store_true",
         help="Run Excel formula calculations via LibreOffice before extracting CSVs",
+    )
+
+    parser.add_argument(
+        "--no-attempt-sheet-name-filter",
+        dest="attempt_sheet_name_filter",
+        action="store_false",
+        default=True,
+        help="Disable attempt sheet name filtering (enabled by default). "
+        "When enabled, only attempt sheets starting with 'answers_' or 'model_' are kept.",
     )
 
     # Execution modes

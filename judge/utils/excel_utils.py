@@ -665,6 +665,7 @@ def process_all_worksheets(
     output_dir: Path,
     quiet: bool = False,
     run_calculation: bool = False,
+    sheet_name_filter: callable = None,
 ) -> Dict[str, Any]:
     """
     Process all worksheets in an Excel file and extract to CSV.
@@ -729,8 +730,25 @@ def process_all_worksheets(
 
     # Process each worksheet
     for sheet_name in sheet_names:
+        # Apply sheet name filter if provided
+        output_sheet_name = sheet_name
+        if sheet_name_filter is not None:
+            filtered_name = sheet_name_filter(sheet_name)
+            if filtered_name is None:
+                if not quiet:
+                    logger.info(
+                        f"\n=== Skipping sheet (filtered out): {sheet_name} ==="
+                    )
+                continue
+            output_sheet_name = filtered_name
+
         if not quiet:
-            logger.info(f"\n=== Processing sheet: {sheet_name} ===")
+            if output_sheet_name != sheet_name:
+                logger.info(
+                    f"\n=== Processing sheet: {sheet_name} -> {output_sheet_name} ==="
+                )
+            else:
+                logger.info(f"\n=== Processing sheet: {sheet_name} ===")
 
         # Get worksheets
         worksheet = workbook[sheet_name]
@@ -750,11 +768,11 @@ def process_all_worksheets(
 
         # Save files
         saved_files = save_sheet_csv_files(
-            output_dir, sheet_name, extraction_result, worksheet, quiet=quiet
+            output_dir, output_sheet_name, extraction_result, worksheet, quiet=quiet
         )
 
         # Store results
-        results[sheet_name] = {
+        results[output_sheet_name] = {
             "info": sheet_info,
             "extraction": extraction_result,
             "saved_files": saved_files,
@@ -961,11 +979,22 @@ def prepare_directory_files(directory_path: str) -> dict:
     return files_dict
 
 
+def _attempt_sheet_name_filter(sheet_name: str) -> Optional[str]:
+    """Filter attempt sheets: keep only those starting with 'answers_' or 'model_', stripping the prefix."""
+    if sheet_name.startswith("answers_"):
+        return sheet_name[len("answers_") :]
+    if sheet_name.startswith("model_"):
+        return sheet_name[len("model_") :]
+    return None
+
+
 def process_case_files(
     file_paths,
     task_folder: str,
     use_existing: bool = False,
     run_calculation: bool = False,
+    attempt_sheet_name_filter: bool = False,
+    quiet: bool = False,
 ):
     """Process multiple Excel files into enhanced CSV files.
 
@@ -974,6 +1003,8 @@ def process_case_files(
         task_folder: Path to the task folder
         use_existing: If True, skip processing if CSV files already exist in the output folder
         run_calculation: If True, run Excel formula calculations before extracting CSVs.
+        attempt_sheet_name_filter: If True, only keep attempt sheets starting with
+            'answers_' or 'model_', stripping the prefix from the output name.
     """
     workbook_dirs = {}
 
@@ -983,7 +1014,8 @@ def process_case_files(
     file_output_dir.mkdir(parents=True, exist_ok=True)
 
     for file_path in file_paths:
-        logger.info(f"Processing file: {file_path}")
+        if not quiet:
+            logger.info(f"\nProcessing file: {file_path}")
         file_path = Path(file_path)
 
         workbook_stem = file_path.stem
@@ -993,17 +1025,24 @@ def process_case_files(
         # Check if CSV files already exist in the workbook directory
         existing_csvs = list(workbook_dir.glob("*.csv"))
         if use_existing and existing_csvs:
-            logger.info(
-                f"    Skipping CSV extraction (files exist): {len(existing_csvs)} CSV files found in {workbook_dir}/"
-            )
+            if not quiet:
+                logger.info(
+                    f"    Skipping CSV extraction (files exist): {len(existing_csvs)} CSV files found in {workbook_dir}/"
+                )
             workbook_dirs[workbook_stem] = str(workbook_dir)
             continue
+
+        # Apply sheet name filter for attempt files if enabled
+        sheet_filter = None
+        if attempt_sheet_name_filter and file_path.name == "ai_attempt.xlsx":
+            sheet_filter = _attempt_sheet_name_filter
 
         process_all_worksheets(
             excel_file_path=str(file_path),
             output_dir=workbook_dir,
-            quiet=True,
+            quiet=quiet,
             run_calculation=run_calculation and file_path.name == "ai_attempt.xlsx",
+            sheet_name_filter=sheet_filter,
         )
         workbook_dirs[workbook_stem] = str(workbook_dir)
 

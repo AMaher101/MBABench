@@ -239,6 +239,7 @@ def judge_case(
     attempt_model: str = None,
     run_calculation: bool = False,
     cached_solution_csv_dir: str = None,
+    attempt_sheet_name_filter: bool = False,
 ):
     """Execute the complete judging workflow for a case using OpenRouter.
 
@@ -260,6 +261,8 @@ def judge_case(
         run_calculation: If True, run Excel formula calculations before extracting CSVs.
         cached_solution_csv_dir: Path to a directory containing pre-extracted solution CSVs.
             When provided, skips solution xlsx CSV extraction and copies from this cache instead.
+        attempt_sheet_name_filter: If True, only keep attempt sheets starting with
+            'answers_' or 'model_', stripping the prefix from the output name.
 
     Returns:
         dict: Dictionary with paths to ai_judgement.json and output_dir.
@@ -327,6 +330,7 @@ def judge_case(
             task_folder,
             use_existing=True,
             run_calculation=run_calculation,
+            attempt_sheet_name_filter=attempt_sheet_name_filter,
         )
         output_dir = result["output_dir"]
         workbook_dirs = result.get("workbook_dirs", {})
@@ -352,6 +356,7 @@ def judge_case(
             task_folder,
             use_existing=use_existing,
             run_calculation=run_calculation,
+            attempt_sheet_name_filter=attempt_sheet_name_filter,
         )
         output_dir = result["output_dir"]
         workbook_dirs = result.get("workbook_dirs", {})
@@ -1151,6 +1156,7 @@ def main(args):
         solution_context_char_limit=args.solution_char_limit,
         attempt_context_char_limit=args.attempt_char_limit,
         total_character_limit=args.total_char_limit,
+        attempt_sheet_name_filter=args.attempt_sheet_name_filter,
     )
 
 
@@ -1218,6 +1224,11 @@ if __name__ == "__main__":
         type=int,
         default=DEFAULT_TOTAL_CHARACTER_LIMIT,
         help=f"Total character limit for combined solution + attempt (default: {DEFAULT_TOTAL_CHARACTER_LIMIT:,})",
+    )
+    parser.add_argument(
+        "--attempt-sheet-name-filter",
+        action="store_true",
+        help="Filter attempt sheets to only include those starting with 'answers_' or 'model_', stripping the prefix",
     )
 
     # Args preprocessing
