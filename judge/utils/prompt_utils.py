@@ -180,12 +180,7 @@ def format_file_section(header, files_dict, add_confirmation=False):
         tuple: (messages, prompt, file_sizes) where file_sizes is a dict mapping
                filename to character count for that file's content.
     """
-    messages = [
-        {
-            "role": "user",
-            "content": f"You will now receive the files for the {header}.",
-        }
-    ]
+    messages = []
     prompt = f"{header}\n"
     sheet_num = 1
     file_sizes = {}
@@ -328,11 +323,16 @@ def build_check_name_mapping(rubric_json_path: str) -> dict:
             for category, items in data.items():
                 if isinstance(items, list):
                     for idx, item in enumerate(items):
-                        if idx < len(LETTERS) and isinstance(item, dict) and "description" in item:
+                        if (
+                            idx < len(LETTERS)
+                            and isinstance(item, dict)
+                            and "description" in item
+                        ):
                             name = item.get("name", item["description"][:40])
                             mapping[(category, LETTERS[idx])] = name
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).warning(f"Could not build check name mapping: {e}")
 
     return mapping
