@@ -249,6 +249,7 @@ def judge_case(
         template_path: Path to the prompt template YAML file.
         model: Model identifier to use for API calls (the grader model).
         no_file_check: If True, skip file confirmation step (default: True).
+            This should always be True. It's only kept optional for legacy reasons.
         nocall: If True, skip API calls (for testing).
         noupload: If True, skip file preparation (for testing).
         use_existing: If True, skip regenerating files if they already exist.
