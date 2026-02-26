@@ -280,8 +280,10 @@ def judge_case(
     logger.info(f"Writing logs to temporary cache path: {cache_log_path}")
 
     task_folder_name = Path(task_folder).name
+    JUDGE_VERSION = load_env_var("JUDGE_VERSION", required=True)
     PROMPT_VERSION = load_env_var("JUDGE_PROMPT_VERSION", required=True)
     RUBRIC_VERSION = load_env_var("JUDGE_RUBRIC_VERSION", required=True)
+    RUBRIC_WEIGHT_VERSION = load_env_var("JUDGE_RUBRIC_WEIGHT_VERSION", default=None)
     CHECK_ORDER = load_env_var(
         "JUDGE_CHECK_ORDER", default="Accuracy,Formula,Formatting"
     ).split(",")
@@ -291,8 +293,9 @@ def judge_case(
     logger.info("OpenRouter Judge Evaluation Workflow")
     logger.info("=" * 80)
     logger.info(
-        f"Grading task: {task_folder_name}, prompt: {PROMPT_VERSION}, "
-        f"rubric: {RUBRIC_VERSION}, model: {model}"
+        f"Grading task: {task_folder_name}, model: {model}, prompt: {PROMPT_VERSION}, "
+        f"rubric: {RUBRIC_VERSION}, rubric weight version: {RUBRIC_WEIGHT_VERSION}, "
+        f"judge version: {JUDGE_VERSION}"
     )
     logger.info("=" * 80)
 
@@ -1000,8 +1003,10 @@ def judge_case(
         "grader_model": model,
         "attempt_model": attempt_model,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "judge_version": JUDGE_VERSION,
         "prompt_version": PROMPT_VERSION,
         "rubric_version": RUBRIC_VERSION,
+        "rubric_weight_version": RUBRIC_WEIGHT_VERSION,
         "rubric_max_mistakes": RUBRIC_MAX_MISTAKES,
         "total_prompt_tokens": token_tracking["total_prompt_tokens"],
         "total_completion_tokens": token_tracking["total_completion_tokens"],
