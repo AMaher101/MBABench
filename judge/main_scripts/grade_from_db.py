@@ -533,6 +533,14 @@ def write_grading_to_db(conn, attempt, result, model):
     """Persist a grading result to the gradings table."""
     PROMPT_VERSION = load_env_var("JUDGE_PROMPT_VERSION", required=True)
     RUBRIC_VERSION = load_env_var("JUDGE_RUBRIC_VERSION", required=True)
+    JUDGE_VERSION = load_env_var("JUDGE_VERSION", required=True)
+
+    # Enforce grade's existence
+    if not result.get("scores"):
+        raise ValueError("Result missing 'scores' field with grading details")
+    for key in ("accuracy_grade", "formula_grade", "format_grade"):
+        if key not in result["scores"]:
+            raise ValueError(f"Result 'scores' missing expected key: {key}")
 
     is_failed = not result["success"]
 
@@ -572,7 +580,7 @@ def write_grading_to_db(conn, attempt, result, model):
         "agentic_mode": (
             attempt.get("agent_model_type", "").lower() in ("agentic", "agent")
         ),
-        "judge_version": 2,
+        "judge_version": JUDGE_VERSION,
     }
 
     return insert_grading(conn, data)
