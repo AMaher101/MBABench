@@ -474,7 +474,12 @@ def grade_single_attempt(
         # Warn loudly if expected scores are missing from judge_case result
         missing_scores = [
             key
-            for key in ("accuracy_score", "formula_score", "formatting_score", "final_score")
+            for key in (
+                "accuracy_score",
+                "formula_score",
+                "formatting_score",
+                "final_score",
+            )
             if result.get(key) is None
         ]
         if missing_scores:
@@ -662,9 +667,7 @@ def main(args):
 
         # Grade each attempt
         # Persistent cache for solution CSVs — avoids re-extracting across runs
-        solution_cache_base = (
-            _judge_root / "scratch" / "grade_cache" / "solution_csv_cache"
-        )
+        solution_cache_base = Path(scratch_base) / "grade_cache" / "solution_csv_cache"
         solution_cache_base.mkdir(parents=True, exist_ok=True)
         solution_csv_cache = {}  # task_id -> cached dir path (in-memory index)
         results = []
