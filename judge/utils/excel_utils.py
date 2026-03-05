@@ -534,19 +534,16 @@ def extract_frozen_panes_info(worksheet) -> Dict[str, Any]:
     frozen_info = {"has_frozen_panes": False, "freeze_panes": None, "split_panes": None}
 
     try:
-        # Check for frozen panes
-        if hasattr(worksheet, "freeze_panes") and worksheet.freeze_panes:
-            frozen_info["has_frozen_panes"] = True
-            freeze_cell = worksheet.freeze_panes
-            if freeze_cell:
-                frozen_info["freeze_panes"] = str(freeze_cell)
-
-        # Check for split panes (less common but possible)
+        # Extract freeze pane location from worksheet.sheet_view.pane
         if hasattr(worksheet, "sheet_view") and worksheet.sheet_view:
             sheet_view = worksheet.sheet_view
             if hasattr(sheet_view, "pane") and sheet_view.pane:
                 pane = sheet_view.pane
                 if pane.xSplit or pane.ySplit:
+                    frozen_info["has_frozen_panes"] = True
+                    frozen_info["freeze_panes"] = _get_excel_cell_reference(
+                        round(pane.ySplit), round(pane.xSplit)
+                    )
                     frozen_info["split_panes"] = {
                         "xSplit": pane.xSplit,
                         "ySplit": pane.ySplit,
