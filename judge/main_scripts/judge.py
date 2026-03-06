@@ -818,6 +818,9 @@ def judge_case(
 
             # Try to parse JSON
             try:
+                if response_text is None or response_text.strip() == "":
+                    raise JudgeOutputError("Response content is empty.")
+
                 parsed_response = json.loads(response_text)
                 if category in parsed_response:
                     category_data = parsed_response[category]
