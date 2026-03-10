@@ -159,6 +159,9 @@ def robust_send_message(
             ):
                 delay = RATE_LIMIT_DELAY
 
+            import traceback
+
+            traceback.print_exc()
             logger.info(
                 f"   Retry {attempt + 1}/{MAX_ATTEMPTS} after {delay:.2f}s due to: {type(e).__name__}"
             )
