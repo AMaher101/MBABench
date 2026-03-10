@@ -37,7 +37,20 @@ load_project_configs()
 # Optional: hard-code a default model list here. When non-empty, only these
 # models are considered unless overridden by --models / --all-models.
 # ---------------------------------------------------------------------------
-DEFAULT_MODELS: list[str] = ["GPT-5.2", "claude_excel_agent", "claude_web"]
+DEFAULT_MODELS: list[str] = [
+    "GPT-5.2",
+    "claude_excel_agent",
+    "claude_web",
+    "openpyxl_openai/gpt-5.3-codex",
+]
+
+# Optional: per-model prompt_version filter. When a model appears here, only
+# attempts whose prompt_version matches the specified value are considered valid.
+# Models not listed here are not filtered by prompt_version.
+# Example: {"GPT-4": 2} means only GPT-4 attempts with prompt_version=2 are kept.
+DEFAULT_MODELS_PROMPT_VERSION: dict[str, int] = {
+    "openpyxl_openai/gpt-5.3-codex": 1004,
+}
 
 
 def get_db_connection():
@@ -48,8 +61,13 @@ def get_db_connection():
     return psycopg2.connect(db_url)
 
 
-def fetch_valid_attempts(conn, task_ids, models=None):
-    """Return valid attempts for the given task ids, optionally filtered by models."""
+def fetch_valid_attempts(conn, task_ids, models=None, prompt_versions=None):
+    """Return valid attempts for the given task ids, optionally filtered by models.
+
+    Args:
+        prompt_versions: dict mapping model name -> required prompt_version.
+            Attempts for listed models are kept only if their prompt_version matches.
+    """
     query = """
         SELECT ta.id AS attempt_id,
                ta.task_id,
@@ -77,7 +95,17 @@ def fetch_valid_attempts(conn, task_ids, models=None):
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(query, params)
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    if prompt_versions:
+        rows = [
+            r
+            for r in rows
+            if r["agent_model_name"] not in prompt_versions
+            or r["prompt_version"] == prompt_versions[r["agent_model_name"]]
+        ]
+
+    return rows
 
 
 def fetch_all_agent_models(conn, models=None):
@@ -198,14 +226,16 @@ def print_multi_task(task_ids, task_names, attempts, all_models):
 
 
 def resolve_models(args_models, args_all_models):
-    """Determine the model filter list."""
+    """Determine the model filter list and per-model prompt_version filter."""
     if args_all_models:
-        return None
+        return None, None
     if args_models:
-        return args_models
+        # Explicit --models: no default prompt_version filtering
+        return args_models, None
     if DEFAULT_MODELS:
-        return DEFAULT_MODELS
-    return None
+        pv = DEFAULT_MODELS_PROMPT_VERSION if DEFAULT_MODELS_PROMPT_VERSION else None
+        return DEFAULT_MODELS, pv
+    return None, None
 
 
 def main():
@@ -238,7 +268,7 @@ def main():
     )
     args = parser.parse_args()
 
-    models = resolve_models(args.models, args.all_models)
+    models, prompt_versions = resolve_models(args.models, args.all_models)
 
     task_ids = [args.task_id] if args.task_id else args.task_ids
 
@@ -251,7 +281,7 @@ def main():
         if missing:
             print(f"Warning: task IDs not found in database: {missing}")
 
-        attempts = fetch_valid_attempts(conn, task_ids, models)
+        attempts = fetch_valid_attempts(conn, task_ids, models, prompt_versions)
 
         if args.task_id:
             print_single_task(args.task_id, task_names, attempts)
