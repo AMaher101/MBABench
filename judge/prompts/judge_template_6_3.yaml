@@ -27,7 +27,7 @@ judge_prompt:
       For each criteria, use this logical process:
       First, evaluate the context of the case to understand what is expected.
       Second, evaluate the workbook on each check one at a time.
-      Third, re-evaluate your judegement for the criteria to ensure you are accurate.
+      Third, re-evaluate your judgment for the criteria to ensure you are accurate.
 
       Fourth and finally, for each check, you must write your evaluation in JSON format.
 
