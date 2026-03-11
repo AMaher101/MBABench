@@ -734,7 +734,6 @@ def judge_case(
 
     stages = compile_prompt(template_path, **compile_kwargs)
     logger.info(f" Compiled {len(stages)} evaluation stages from template")
-
     # Build check name mapping for enriching responses
     check_name_mapping = build_check_name_mapping(str(rubric_json_path))
 
@@ -755,6 +754,8 @@ def judge_case(
     # STEP 5: Make sequential OpenRouter API calls via staged conversation
     logger.info("\n[Step 5] Evaluating with OpenRouter API...")
 
+    all_stage_conversations = {}
+    stage_responses = {}  # stage_idx -> response_text
     conversation_messages = []
     token_tracking = {
         "evaluations": {},
@@ -783,7 +784,14 @@ def judge_case(
 
         logger.info(f"  Evaluating {category} (stage {stage_idx})...")
 
-        conversation_messages.extend(stage_messages)
+        # Each stage is a self-contained conversation (template defines full context per stage)
+        conversation_messages = list(stage_messages)
+
+        # Fill in prior_response slots with actual responses from earlier stages
+        for msg in conversation_messages:
+            prior_idx = msg.pop("_prior_stage", None)
+            if prior_idx is not None:
+                msg["content"] = stage_responses[prior_idx]
 
         # Retry loop for API call + JSON parsing
         max_json_attempts = 10
@@ -946,15 +954,18 @@ def judge_case(
         )
 
         conversation_messages.append({"role": "assistant", "content": response_text})
+        stage_responses[stage_idx] = response_text
+        all_stage_conversations[category] = conversation_messages
 
         logger.info(f"   {category} evaluation completed")
-        time.sleep(2)
+        time.sleep(0.5)
 
-    # Save conversation messages for reference
-    conversation_path = output_dir / "conversation_messages.json"
-    with open(conversation_path, "w", encoding="utf-8") as f:
-        json.dump(conversation_messages, f, indent=2)
-    logger.info(f" Conversation messages saved to: {conversation_path}")
+    # Save conversation messages for reference (one file per stage)
+    for stage_category, stage_msgs in all_stage_conversations.items():
+        conversation_path = output_dir / f"conversation_messages_{stage_category}.json"
+        with open(conversation_path, "w", encoding="utf-8") as f:
+            json.dump(stage_msgs, f, indent=2)
+        logger.info(f" Conversation messages saved to: {conversation_path}")
 
     # STEP 6: Save ai_judgement as JSON
     logger.info("\n[Step 6] Saving AI judgement...")

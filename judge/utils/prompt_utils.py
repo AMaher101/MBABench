@@ -138,6 +138,14 @@ def compile_prompt(template_path: str, **kwargs) -> list[list[dict]]:
                 continue
             current_stage.extend(kwargs[name])
 
+        elif entry_type == "prior_response":
+            # Slot for a previous stage's assistant response, filled at runtime.
+            current_stage.append({
+                "role": "assistant",
+                "content": None,
+                "_prior_stage": entry["stage"],
+            })
+
         elif entry_type == "response":
             stages.append(current_stage)
             current_stage = []

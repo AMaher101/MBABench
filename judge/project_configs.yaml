@@ -19,11 +19,11 @@ miscs:
 
 judge:
   # Main judge version. Increment this when making significant changes to the judging process, e.g. changing the prompt template, rubric, or grading logic in a way that would greatly affect grading outcomes. This is used for tracking which grading results correspond to which judging configurations.
-  version: 4
+  version: 5
 
   # The prompt template to use for judging. Should be a YAML file in the judge/prompts directory.
-  prompt_template: "prompts/judge_template_6_3.yaml"
-  prompt_version: "6.3"
+  prompt_template: "prompts/judge_template_6_4.yaml"
+  prompt_version: "6.4"
 
   # The rubric file containing subdimension and description
   rubric: "prompts/rubrics/rubric_7.json"
