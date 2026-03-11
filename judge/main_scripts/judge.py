@@ -895,6 +895,8 @@ def judge_case(
                 break
             except (json.JSONDecodeError, JudgeOutputError) as e:
                 traceback.print_exc()
+                if response_text is None:
+                    response_text = "<empty response>"
                 failed_responses.append(response_text)
                 parse_failures[category] = {
                     "success": True,
