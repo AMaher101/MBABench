@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from .excel_utils import encode_file_to_base64
+from .excel_utils import NOGRADE_PREFIX, encode_file_to_base64
 
 LETTERS = string.ascii_uppercase
 
@@ -200,6 +200,13 @@ def format_file_section(header, files_dict, add_confirmation=False):
         if name.endswith("_full.csv"):
             base_name = name.replace("_full.csv", "")
 
+            # Detect nograde sheets (context-only, not to be graded)
+            is_nograde = base_name.startswith(NOGRADE_PREFIX)
+            if is_nograde:
+                display_name = base_name[len(NOGRADE_PREFIX):]
+            else:
+                display_name = base_name
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     file_content = f.read()
@@ -209,19 +216,36 @@ def format_file_section(header, files_dict, add_confirmation=False):
                     f"[File content encoded as base64: {base64_content[:100]}...]"
                 )
 
-            text_content = (
-                f"Sheet {sheet_num}: {base_name} (data - CSV format):\n{file_content}"
-            )
+            if is_nograde:
+                nograde_label = (
+                    " [CONTEXT ONLY - DO NOT GRADE: This sheet is provided for "
+                    "reference context only. Do NOT evaluate or grade this sheet.]"
+                )
+                text_content = (
+                    f"Sheet {sheet_num}: {display_name} (data - CSV format)"
+                    f"{nograde_label}:\n{file_content}"
+                )
+            else:
+                text_content = (
+                    f"Sheet {sheet_num}: {display_name} (data - CSV format):\n{file_content}"
+                )
             messages.append(
                 {"role": "user", "content": [{"type": "text", "text": text_content}]}
             )
-            prompt += f"Sheet {sheet_num}: {base_name} (data): {name}\n"
+            prompt += f"Sheet {sheet_num}: {display_name} (data): {name}\n"
             file_sizes[name] = len(text_content)
             sheet_num += 1
 
         elif name.endswith("_additional_format.txt"):
             base_name = name.replace("_additional_format.txt", "")
 
+            # Detect nograde sheets for formatting files too
+            is_nograde = base_name.startswith(NOGRADE_PREFIX)
+            if is_nograde:
+                display_name = base_name[len(NOGRADE_PREFIX):]
+            else:
+                display_name = base_name
+
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     file_content = f.read()
@@ -231,11 +255,15 @@ def format_file_section(header, files_dict, add_confirmation=False):
                     f"[File content encoded as base64: {base64_content[:100]}...]"
                 )
 
-            text_content = f"    {base_name} (formatting):\n{file_content}"
+            if is_nograde:
+                nograde_label = " [CONTEXT ONLY - DO NOT GRADE]"
+                text_content = f"    {display_name} (formatting){nograde_label}:\n{file_content}"
+            else:
+                text_content = f"    {display_name} (formatting):\n{file_content}"
             messages.append(
                 {"role": "user", "content": [{"type": "text", "text": text_content}]}
             )
-            prompt += f"    {base_name} (formatting): {name}\n"
+            prompt += f"    {display_name} (formatting): {name}\n"
             file_sizes[name] = len(text_content)
         else:
             if suffix in [".txt", ".csv"]:

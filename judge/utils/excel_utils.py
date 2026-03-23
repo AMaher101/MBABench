@@ -14,6 +14,8 @@ import openpyxl
 from .logger import logger
 from .misc_utils import load_env_var
 
+NOGRADE_PREFIX = "_nograde_"
+
 
 def get_worksheet_info(workbook: openpyxl.Workbook, sheet_name: str) -> Dict[str, Any]:
     """Get high level information about a worksheet."""
@@ -977,12 +979,14 @@ def prepare_directory_files(directory_path: str) -> dict:
 
 
 def _attempt_sheet_name_filter(sheet_name: str) -> Optional[str]:
-    """Filter attempt sheets: keep only those starting with 'answers_' or 'model_', stripping the prefix."""
+    """Filter attempt sheets: keep those starting with 'answers_' or 'model_' (stripping
+    the prefix) for grading.  All other sheets are kept with a '_nograde_' prefix so they
+    are still included in the judge context but flagged as not-to-be-graded."""
     if sheet_name.startswith("answers_"):
         return sheet_name[len("answers_") :]
     if sheet_name.startswith("model_"):
         return sheet_name[len("model_") :]
-    return None
+    return f"{NOGRADE_PREFIX}{sheet_name}"
 
 
 def process_case_files(
