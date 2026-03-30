@@ -115,6 +115,8 @@ def _get_formatted_value(cell, cell_data_only) -> str:
 
 def _get_excel_cell_reference(row_idx: int, col_idx: int) -> str:
     """Convert row and column indices to Excel cell reference (e.g., A1, B19)."""
+    if type(col_idx) != int:
+        return f"Col {col_idx} Row {row_idx}"
     # Convert column index to Excel column letters
     col_letters = ""
     col_num = col_idx
@@ -535,6 +537,12 @@ def extract_frozen_panes_info(worksheet) -> Dict[str, Any]:
     """Extract frozen panes information from a worksheet."""
     frozen_info = {"has_frozen_panes": False, "freeze_panes": None, "split_panes": None}
 
+    def safe_round(value):
+        try:
+            return round(value)
+        except (TypeError, ValueError):
+            return None
+
     try:
         # Extract freeze pane location from worksheet.sheet_view.pane
         if hasattr(worksheet, "sheet_view") and worksheet.sheet_view:
@@ -544,7 +552,7 @@ def extract_frozen_panes_info(worksheet) -> Dict[str, Any]:
                 if pane.xSplit or pane.ySplit:
                     frozen_info["has_frozen_panes"] = True
                     frozen_info["freeze_panes"] = _get_excel_cell_reference(
-                        round(pane.ySplit), round(pane.xSplit)
+                        safe_round(pane.ySplit), safe_round(pane.xSplit)
                     )
                     frozen_info["split_panes"] = {
                         "xSplit": pane.xSplit,
@@ -555,6 +563,12 @@ def extract_frozen_panes_info(worksheet) -> Dict[str, Any]:
                     }
     except (AttributeError, TypeError):
         # Handle cases where properties don't exist or have unexpected types
+        import traceback
+
+        logger.info(
+            f"Warning: Error extracting frozen panes info: {traceback.format_exc()}"
+        )
+
         pass
 
     return frozen_info
