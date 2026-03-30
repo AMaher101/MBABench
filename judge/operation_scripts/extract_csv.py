@@ -9,7 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from utils.excel_utils import process_all_worksheets
+from utils.excel_utils import _attempt_sheet_name_filter, process_all_worksheets
 from utils.logger import logger
 from utils.misc_utils import load_project_configs
 
@@ -33,6 +33,13 @@ def main():
         "--run-calculation",
         action="store_true",
         help="Run Excel formula calculations via LibreOffice before extracting CSVs.",
+    )
+    parser.add_argument(
+        "--attempt-sheet-name-filter", "--filter-attempts", "-fa",
+        action="store_true",
+        help="Only keep attempt sheets starting with 'answers_' or 'model_', "
+        "stripping the prefix from the output name. Other sheets are kept "
+        "with a '_nograde_' prefix.",
     )
     args = parser.parse_args()
 
@@ -59,10 +66,13 @@ def main():
     logger.info(f"Extracting CSVs from: {file_path}")
     logger.info(f"Output directory:     {output_dir}")
 
+    sheet_filter = _attempt_sheet_name_filter if args.attempt_sheet_name_filter else None
+
     process_all_worksheets(
         excel_file_path=str(file_path),
         output_dir=output_dir,
         run_calculation=args.run_calculation,
+        sheet_name_filter=sheet_filter,
     )
 
     logger.info(f"Done. CSVs saved to: {output_dir}")
