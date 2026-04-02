@@ -1,0 +1,19 @@
+# Runner config for Claude agent
+# Don't edit this unless you know what you're doing
+
+# Template file to use (determines agent type and all settings)
+template: "templates/claude.yaml"
+
+script: "excel_agent/engine.py"
+config_arg: "--config"
+python_cmd: "auto"  # Auto-detect: uses "uv run python" if uv available, else "python"
+
+# Always use --no-hold for batch automation
+default_extra_args:
+  - "--no-hold"
+
+# Environment variables for credentials
+# Set these in your .env file or environment:
+#   ONEDRIVE_EMAIL=your_email@example.com
+#   ONEDRIVE_PASSWORD=your_password
+env_vars: {}

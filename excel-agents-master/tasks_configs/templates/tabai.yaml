@@ -1,0 +1,57 @@
+# TabAI Agent Template Configuration
+# NOTE: task_source is now defined in each task list YAML file (not here)
+# This prevents mismatches between task files and source directories.
+template:
+  agent_type: "tabai"
+
+  # Where to find files (base path - actual path constructed dynamically)
+  # task_source from tasks yaml determines the subfolder:
+  #   fmwc -> main_tasks/fmwc/{task_name}/Task
+  #   modeloff -> main_tasks/modeloff/{task_name}/Task
+  #   wallstreetprep -> main_tasks/wsp/{task_name}/Task
+  file_path:
+    - "My files"
+    - "YOUR_PROJECT_ID"
+    - "main_tasks"
+
+  # Prompt version (recorded in JSON completion logs for tracking)
+  prompt_version: 1
+
+  # Prompts (shared across all agents)
+  prompts:
+    - "I will be giving you a task in three steps. Your only allowed method for solving this problem is by building an Excel Model using the currently opened sheet, its provided data if any, and any files I attached. You must not use any external or internal tools, like a code interpreter or calculator, to find the final answers. The Excel file you build must be the only thing performing the calculations."
+    - "Your first task is to analyze the attached problem statement and data file(s) and output them in a new sheet called 'Summary'. Do not build the model yet. Provide a brief summary of 1. The primary questions to answer. 2. The key inputs and assumptions. 3. A high-level plan for solving it. Confirm when you have completed this analysis."
+    - "Your next step is actually making the model.  Create a new Excel sheet called 'Model'. All logic should be on this 'Model' tab.  If you need additional sheets, you can create them in the name of 'Model_{number}' where the number is an incrementing number. Adhere to these standards: professional formatting, robust (inputs in separate cells, no hard-coding in formulas), accurate, and tractable.  For example, this model should be up to the standards and presentation abilities of a white-collar worker in a top professional services firm. Let me know when the 'Model' is complete."
+    - "Your final task is to create the 'Answers' sheet. Create a new tab named 'Answers'. On this sheet, present the final answers to all questions. Every single answer on this sheet must be directly referenceable to your 'Model'. Hard coded values are to be generally avoided on the 'Answers' sheet."
+
+  # Optional: File to save completed task URLs (default: None, no URL logging)
+  # finished_works_file: "completed_tasks.txt"
+
+  # Retry settings
+  retry:
+    max_agent_attempts: 3       # Max attempts where the agent actually ran
+    max_pipeline_attempts: 10   # Hard cap including infrastructure failures
+    timeout_per_task_seconds: 5400  # 90 minutes
+
+  # TabAI-specific settings
+  tabai:
+    max_sec_per_task: 5400  # 90 min (1.5 hour) timeout
+    max_agent_attempts: 3   # Max attempts where the agent actually ran
+    max_total_attempts: 10  # Hard cap across all failure types (pipeline + agent)
+
+    browser:
+      type: "firefox"   # Options: "chromium", "firefox", "webkit", "chrome"
+      headless: false
+      timeout: 10000
+
+    check_interval_seconds: 60
+    max_wait_per_prompt_seconds: 1800
+
+    logging:
+      level: "INFO"
+      save_to_file: true
+      log_directory: "tabai_logs"
+
+    runtime:
+      no_hold: true
+      kill_all_browsers: false

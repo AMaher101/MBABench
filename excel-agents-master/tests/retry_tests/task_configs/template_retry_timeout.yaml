@@ -1,0 +1,42 @@
+# Retry Test 3: TIMEOUT — 30s timeout is too short for the agent to finish
+# Same prompts as success test, but max_sec_per_task=30 guarantees timeout.
+# Expected: shutdown_event fires after 30s, loop breaks with status=timeout.
+
+template:
+  agent_type: "claude_excel_agent"
+
+  file_path:
+    - "My files"
+    - "YOUR_PROJECT_ID"
+    - "main_tasks"
+
+  prompt_version: 2
+
+  prompts:
+    - "Create a new sheet called 'model' and write 'Retry test - success' in cell A1."
+    - "Create a new sheet called 'answers' and write 'Test answers' in cell A1."
+
+  finished_works_file: "test_works.txt"
+
+  claude_excel_agent:
+    skip_file_upload: true
+    max_sec_per_task: 10
+    max_agent_attempts: 2
+    max_total_attempts: 2
+
+    browser:
+      type: "chrome"
+      headless: false
+      timeout: 10000
+
+    check_interval_seconds: 30
+    max_wait_per_prompt_seconds: 60
+
+    logging:
+      level: "DEBUG"
+      save_to_file: true
+      log_directory: "claude_logs"
+
+    runtime:
+      no_hold: true
+      kill_all_browsers: false

@@ -1,0 +1,43 @@
+# Retry Test 2: MISSING_SHEETS — agent creates wrong sheet names
+# Creates 'test_output' instead of required 'model'/'answers' sheets.
+# Expected: missing_sheets every attempt -> exhausts after 2 attempts.
+# JSON: 2 files per task (attempt 0 deprecated, attempt 1 final).
+
+template:
+  agent_type: "claude_excel_agent"
+
+  file_path:
+    - "My files"
+    - "YOUR_PROJECT_ID"
+    - "main_tasks"
+
+  prompt_version: 2
+
+  prompts:
+    - "Create a new sheet called 'test_output' and write 'This is a test' in cell A1."
+    - "On the 'test_output' sheet, write 'Missing sheets test' in cell A2."
+
+  finished_works_file: "test_works.txt"
+
+  claude_excel_agent:
+    skip_file_upload: true
+    max_sec_per_task: 600
+    max_agent_attempts: 2
+    max_total_attempts: 2
+
+    browser:
+      type: "chrome"
+      headless: false
+      timeout: 10000
+
+    check_interval_seconds: 30
+    max_wait_per_prompt_seconds: 60
+
+    logging:
+      level: "DEBUG"
+      save_to_file: true
+      log_directory: "claude_logs"
+
+    runtime:
+      no_hold: true
+      kill_all_browsers: false

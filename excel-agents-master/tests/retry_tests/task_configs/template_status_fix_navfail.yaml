@@ -1,0 +1,41 @@
+# Status Fix Test: Pipeline Fail → nav_failed (NOT timeout)
+# Uses max_total_attempts=1 so each task completes in ~75s (well within 300s timeout).
+# Verifies that the post-loop timeout check doesn't override nav_failed.
+
+template:
+  agent_type: "claude_excel_agent"
+
+  file_path:
+    - "My files"
+    - "YOUR_PROJECT_ID"
+    - "main_tasks"
+
+  prompt_version: 2
+
+  prompts:
+    - "This prompt should never run (navigation will fail first)."
+
+  finished_works_file: "test_works.txt"
+
+  claude_excel_agent:
+    skip_file_upload: true
+    max_sec_per_task: 300
+    max_agent_attempts: 1
+    max_total_attempts: 1
+
+    browser:
+      type: "chrome"
+      headless: false
+      timeout: 10000
+
+    check_interval_seconds: 30
+    max_wait_per_prompt_seconds: 60
+
+    logging:
+      level: "DEBUG"
+      save_to_file: true
+      log_directory: "claude_logs"
+
+    runtime:
+      no_hold: true
+      kill_all_browsers: false

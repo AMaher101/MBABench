@@ -1,0 +1,39 @@
+# Sample Task List Configuration
+# ================================
+# Each task entry defines a single Excel modeling task for the automation system.
+# The batch runner iterates through these tasks sequentially.
+#
+# Required fields:
+#   task_name    - Name of the task directory (must match the folder name in main_tasks/)
+#   task_source  - Source dataset: "fmwc", "modeloff", or "wallstreetprep"
+#
+# Optional fields:
+#   priority     - Task priority for ordering (default: "normal")
+#   skip         - Set to true to skip this task (default: false)
+#   direct_url   - Direct OneDrive/SharePoint URL to the task folder.
+#                  If provided, skips folder-by-folder navigation entirely.
+#
+# The file_path in the template config + task_source + task_name together
+# determine where the task files are located on OneDrive:
+#   My files / YOUR_PROJECT_ID / main_tasks / {source_folder} / {task_name} / Task
+#
+# Where source_folder maps:
+#   fmwc          -> fmwc
+#   modeloff      -> modeloff
+#   wallstreetprep -> wsp
+
+tasks:
+  - task_name: "Example_DCF_Model"
+    task_source: "fmwc"
+
+  - task_name: "Example_LBO_Analysis"
+    task_source: "modeloff"
+
+  - task_name: "Example_Valuation_Comp"
+    task_source: "wallstreetprep"
+    # skip: true  # Uncomment to skip this task
+
+  # Example: Using a direct OneDrive URL instead of folder navigation
+  # - task_name: "Example_Direct_Link"
+  #   task_source: "fmwc"
+  #   direct_url: "https://onedrive.live.com/?id=YOUR_FOLDER_ID&cid=YOUR_CID"
