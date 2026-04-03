@@ -1,5 +1,5 @@
 """
-Browser management utilities for TabAI Engine.
+Browser management utilities for the Excel Agent Engine.
 
 Handles browser setup, process management, and platform-specific configurations.
 

@@ -1,7 +1,11 @@
 """
-File management utilities for TabAI Engine.
+File management utilities for the Excel Agent Engine.
 
 Handles file discovery, path resolution, and task file management.
+
+Supports two modes:
+  - **Explicit** (v2): caller provides `upload_files` and `template_file` directly.
+  - **Legacy** (v1): auto-discovers files from `main_tasks/{source}/{task}/Task/`.
 """
 
 import logging
@@ -14,35 +18,44 @@ logger = logging.getLogger(__name__)
 class FileManager:
     """Manages file discovery and path operations."""
 
+    # ------------------------------------------------------------------
+    # Explicit file resolution (v2 config)
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def extract_task_name(file_path: List[str]) -> Optional[str]:
+    def resolve_upload_files(
+        upload_files: List[str],
+        local_files_base: Optional[str] = None,
+    ) -> List[str]:
         """
-        Extract task name from file_path config.
+        Resolve upload_files paths to absolute paths.
 
         Args:
-            file_path: List of path components
+            upload_files: Relative (or absolute) file paths from the task YAML.
+            local_files_base: Base directory for resolving relative paths.
+                              Defaults to CWD if not set.
 
         Returns:
-            Task name or None if not found
-
-        Example:
-            ["My files", "YOUR_PROJECT_ID", "main_tasks", "fmwc", "task_name", "Task"]
-            -> "task_name"
+            List of absolute file paths (only those that exist on disk).
         """
-        logger.info(f"🔍 Extracting task name from file_path: {file_path}")
-        logger.info(f"   file_path length: {len(file_path)}")
+        base = Path(local_files_base) if local_files_base else Path.cwd()
+        resolved = []
+        for fp in upload_files:
+            p = Path(fp)
+            if not p.is_absolute():
+                p = base / p
+            p = p.resolve()
+            if p.exists():
+                resolved.append(str(p))
+                logger.info(f"  📤 Upload file: {p.name}")
+            else:
+                logger.warning(f"  ⚠️ Upload file not found, skipping: {p}")
+        logger.info(f"📤 Resolved {len(resolved)}/{len(upload_files)} upload files")
+        return resolved
 
-        if len(file_path) >= 4:
-            # Task name is the element before "Task" folder
-            # Assuming path ends with: [..., task_name, "Task"]
-            task_name = file_path[-2]
-            logger.info(f"✅ Extracted task name: '{task_name}'")
-            logger.info("   (element at index -2 in file_path)")
-            return task_name
-        else:
-            logger.error("❌ Could not extract task name - file_path too short!")
-            logger.error(f"   Expected at least 4 elements, got {len(file_path)}")
-            return None
+    # ------------------------------------------------------------------
+    # Legacy helpers (v1 config)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def get_local_task_files(task_name: str, task_source: str = "fmwc") -> List[str]:

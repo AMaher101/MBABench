@@ -1,5 +1,5 @@
 """
-Excel operations for TabAI Engine.
+Excel operations for the Excel Agent Engine.
 
 Handles Excel file creation, renaming, and workbook operations.
 """

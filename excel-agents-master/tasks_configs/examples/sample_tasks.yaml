@@ -1,39 +1,71 @@
 # Sample Task List Configuration
 # ================================
-# Each task entry defines a single Excel modeling task for the automation system.
-# The batch runner iterates through these tasks sequentially.
 #
-# Required fields:
-#   task_name    - Name of the task directory (must match the folder name in main_tasks/)
-#   task_source  - Source dataset: "fmwc", "modeloff", or "wallstreetprep"
+# Each task entry tells the automation:
+#   1. WHERE to go on OneDrive    (cloud navigation)
+#   2. WHAT local files to upload (your machine -> add-in panel)
+#   3. WHAT to name the output    (solution file)
 #
-# Optional fields:
-#   priority     - Task priority for ordering (default: "normal")
-#   skip         - Set to true to skip this task (default: false)
-#   direct_url   - Direct OneDrive/SharePoint URL to the task folder.
-#                  If provided, skips folder-by-folder navigation entirely.
+# The TEMPLATE config (e.g. templates/claude.yaml) controls:
+#   - Which AI agent to use
+#   - What prompts to send
+#   - Retry / timeout settings
 #
-# The file_path in the template config + task_source + task_name together
-# determine where the task files are located on OneDrive:
-#   My files / YOUR_PROJECT_ID / main_tasks / {source_folder} / {task_name} / Task
-#
-# Where source_folder maps:
-#   fmwc          -> fmwc
-#   modeloff      -> modeloff
-#   wallstreetprep -> wsp
+# ──────────────────────────────────────────────────────────────
+#  IMPORTANT: "Cloud" and "Local" are completely independent.
+#  - onedrive_path / direct_url  = where the BROWSER navigates
+#  - upload_files                = files from YOUR DISK uploaded
+#                                  into the add-in chat panel
+#  They do NOT need to match or mirror each other.
+# ──────────────────────────────────────────────────────────────
 
 tasks:
+  # ── Example 1: Full explicit config ──────────────────────────
   - task_name: "Example_DCF_Model"
-    task_source: "fmwc"
 
+    # CLOUD — Where to navigate on OneDrive (folder-by-folder)
+    onedrive_path:
+      - "My files"
+      - "YOUR_PROJECT_ID"
+      - "main_tasks"
+      - "fmwc"
+      - "Example_DCF_Model"
+      - "Task"
+
+    # Which workbook to open in the folder above.
+    # Use "blank" or omit to create a new empty workbook.
+    template_file: "DCF_Model.xlsx"
+
+    # LOCAL — Files on your machine to upload into the AI panel.
+    # Paths are relative to local_files_base in the template config,
+    # or to the current working directory if local_files_base is not set.
+    upload_files:
+      - "problem_statement.pdf"
+      - "data_tables.xlsx"
+
+    # OUTPUT — Base name for the solution file.
+    # Final name: {solution_name}_{agent_type}_{N}.xlsx
+    # Omit to default to "{task_name}_Solution".
+    solution_name: "DCF_Model_Solution"
+
+  # ── Example 2: Direct URL (skip folder navigation) ──────────
   - task_name: "Example_LBO_Analysis"
-    task_source: "modeloff"
+    direct_url: "https://onedrive.live.com/?id=YOUR_FOLDER_ID&cid=YOUR_CID"
+    template_file: "blank"
+    upload_files:
+      - "lbo_case_study.pdf"
+    solution_name: "LBO_Analysis_Solution"
 
+  # ── Example 3: Minimal config (blank workbook, no uploads) ──
+  - task_name: "Example_Quick_Test"
+    onedrive_path:
+      - "My files"
+      - "test_folder"
+
+  # ── Example 4: Legacy format (still supported) ──────────────
+  # If you omit onedrive_path, the system builds the path from:
+  #   file_path (in template) + task_source + task_name + "Task"
+  # This is the original BizbenchV1 format.
   - task_name: "Example_Valuation_Comp"
     task_source: "wallstreetprep"
     # skip: true  # Uncomment to skip this task
-
-  # Example: Using a direct OneDrive URL instead of folder navigation
-  # - task_name: "Example_Direct_Link"
-  #   task_source: "fmwc"
-  #   direct_url: "https://onedrive.live.com/?id=YOUR_FOLDER_ID&cid=YOUR_CID"

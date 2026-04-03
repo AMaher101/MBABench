@@ -1,5 +1,5 @@
 """
-Logging configuration for TabAI Engine.
+Logging configuration for the Excel Agent Engine.
 
 Handles logging setup with console and optional file output.
 """

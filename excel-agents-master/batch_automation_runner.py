@@ -174,17 +174,23 @@ class TaskRunner:
         self, task: Dict[str, Any], agent_name: str = None
     ) -> Dict[str, Any]:
         """
-        Create config for a specific task from template.
+        Create config for a specific task by merging template + per-task fields.
+
+        Per-task fields that override template defaults:
+            onedrive_path, direct_url, template_file, upload_files,
+            solution_name, task_source
 
         Args:
-            task: Task definition dict
-            agent_name: Name of the agent (e.g., 'tabai', 'claude_excel_agent') - determines which config section to use
+            task: Task definition dict (from tasks YAML)
+            agent_name: Agent type string (e.g., 'claude_excel_agent')
 
         Returns:
-            Config dict
+            Merged config dict ready for engine.py
         """
+        from excel_agent.core.config_loader import TASK_LEVEL_FIELDS
+
         # Extract task name for completion logging and variable substitution
-        task_name = task.get("_task_name", task.get("name", ""))
+        task_name = task.get("_task_name", task.get("task_name", task.get("name", "")))
         variables = {"task_name": task_name, "task": task_name}  # Alias
 
         # Apply template with variable substitution
@@ -205,7 +211,7 @@ class TaskRunner:
 
             # If agent_name is specified, only include that agent's config
             if agent_name and agent_name in template_copy:
-                # Keep shared settings (file_path, prompts, task_source, etc.) and agent-specific settings
+                # Keep shared settings and agent-specific settings
                 agent_config = template_copy[agent_name]
                 config.update(
                     {
@@ -213,6 +219,7 @@ class TaskRunner:
                         "prompts": template_copy.get("prompts", []),
                         "task_source": template_copy.get("task_source", "fmwc"),
                         "prompt_version": template_copy.get("prompt_version"),
+                        "local_files_base": template_copy.get("local_files_base"),
                         agent_name: agent_config,
                     }
                 )
@@ -229,6 +236,11 @@ class TaskRunner:
                 if agent_name:
                     config["agent_name"] = agent_name
                     config["agent_type"] = agent_name
+
+            # Forward per-task fields (v2) — these override template defaults
+            for field in TASK_LEVEL_FIELDS:
+                if field in task:
+                    config[field] = task[field]
 
             # Apply variable substitution
             config = self._substitute_variables(config, variables)
@@ -267,7 +279,10 @@ class TaskRunner:
         Returns:
             True if task succeeded, False otherwise
         """
-        task_name = task.get("_task_name", task.get("name", f"Task {task_index + 1}"))
+        task_name = task.get(
+            "_task_name",
+            task.get("task_name", task.get("name", f"Task {task_index + 1}")),
+        )
         logger.info(f"\n{'='*80}")
         logger.info(f"🚀 Starting Task {task_index + 1}: {task_name}")
         logger.info(f"{'='*80}")
@@ -947,7 +962,9 @@ def main():
 
         results.append(
             {
-                "task_name": task.get("_task_name", task.get("name", f"Task {i+1}")),
+                "task_name": task.get(
+                    "_task_name", task.get("task_name", task.get("name", f"Task {i+1}"))
+                ),
                 "success": success,
                 "duration_seconds": task_duration,
             }

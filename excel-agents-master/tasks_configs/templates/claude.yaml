@@ -1,14 +1,25 @@
-# Claude Agent Template Configuration
-# NOTE: task_source is now defined in each tasks_*.yaml file (not here)
-# This prevents mismatches between task files and source directories.
+# Claude Excel Agent — Template Configuration
+# =============================================
+# This file defines AGENT settings shared across all tasks.
+# Task-specific settings (navigation, files, output) go in your tasks YAML.
+#
+# See tasks_configs/examples/sample_tasks.yaml for task list format.
+
 template:
   agent_type: "claude_excel_agent"
 
-  # Where to find files (base path - actual path constructed dynamically)
-  # task_source from tasks yaml determines the subfolder:
-  #   fmwc -> main_tasks/fmwc/{task_name}/Task
-  #   modeloff -> main_tasks/modeloff/{task_name}/Task
-  #   wallstreetprep -> main_tasks/wsp/{task_name}/Task
+  # ──────────────────────────────────────────────────────────────
+  # LOCAL FILES BASE (optional)
+  # ──────────────────────────────────────────────────────────────
+  # Base directory for resolving upload_files paths in your tasks YAML.
+  # If omitted, paths are resolved from the current working directory.
+  # local_files_base: "project_data/"
+
+  # ──────────────────────────────────────────────────────────────
+  # LEGACY: OneDrive base path (only needed for v1 task format)
+  # ──────────────────────────────────────────────────────────────
+  # If your tasks YAML uses task_source instead of onedrive_path,
+  # this base path + task_source + task_name + "Task" builds the path.
   file_path:
     - "My files"
     - "YOUR_PROJECT_ID"
@@ -17,11 +28,11 @@ template:
   # Prompt version (recorded in JSON completion logs for tracking)
   prompt_version: 2
 
-  # Prompts (shared across all agents)
+  # ──────────────────────────────────────────────────────────────
+  # PROMPTS
+  # ──────────────────────────────────────────────────────────────
+  # Sent sequentially to the AI agent. Replace with your own instructions.
   prompts:
-  #  - "Create a new sheet called 'Test'"
-  #  - "On the 'Test' sheet, write the word 'Headless False'"
-  #  - "Under that, write the names of all the attached files.  If no attachments, write 'No attachments'."
     - "You are an expert financial modeling agent. Your task is to create Excel/spreadsheet workbooks against the following rubric for which you will be evaluated against. Note each criterion and ensure the workbook meets the \"good\" and avoids the \"bad\" standard described.\n\n\
       ACCURACY\n\
       Final Calculations Check whether the final calculations of the sheet are accurate with the given inputs and case context.\n\
@@ -82,28 +93,28 @@ template:
     - "Your next step is actually making the model.  Create a new Excel sheet called 'model_main'. All logic should be on this 'model_main' tab.  If you need additional sheets, you can create them in the name of 'model_{number}' where the number is an incrementing number (e.g. 'model_1', 'model_2', etc.). Adhere to these standards: professional formatting, robust (inputs in separate cells, no hard-coding in formulas), accurate, and tractable.  For example, this model should be up to the standards and presentation abilities of a white-collar worker in a top professional services firm. Let me know when the model is complete."
     - "Your final task is to create the answers sheet. Create a new tab named 'answers_final'. On this sheet, present the final answers to all questions. Every single answer on this sheet must be directly referenceable to your 'model_main' sheet (or other 'model_' sheets). Hard coded values are to be generally avoided on the answers sheet. If you need additional answer sheets, name them 'answers_1', 'answers_2', etc."
 
-
-  # Optional: File to save completed task URLs (default: None, no URL logging)
-  # finished_works_file: "completed_tasks.txt"
-
-  # Retry settings
+  # ──────────────────────────────────────────────────────────────
+  # RETRY SETTINGS
+  # ──────────────────────────────────────────────────────────────
   retry:
     max_agent_attempts: 3       # Max attempts where the agent actually ran
     max_pipeline_attempts: 10   # Hard cap including infrastructure failures
     timeout_per_task_seconds: 7200  # 2 hours
 
-  # Claude-specific settings
+  # ──────────────────────────────────────────────────────────────
+  # CLAUDE-SPECIFIC SETTINGS
+  # ──────────────────────────────────────────────────────────────
   claude_excel_agent:
     # Model selection (optional). Options: opus_4_6, sonnet_4_6
     # If null or omitted, uses the currently active model in the add-in.
     model: null
 
     max_sec_per_task: 7200  # 2 hour timeout
-    max_agent_attempts: 3   # Max attempts where the agent actually ran
-    max_total_attempts: 10  # Hard cap across all failure types (pipeline + agent)
+    max_agent_attempts: 3
+    max_total_attempts: 10
 
     browser:
-      type: "chrome"   # Chrome (uses Chrome Canary binary via CDP)
+      type: "chrome"
       headless: false
       timeout: 10000
 

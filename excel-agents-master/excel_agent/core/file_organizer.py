@@ -1,5 +1,5 @@
 """
-File organizer for TabAI Engine.
+File organizer for the Excel Agent Engine.
 
 Handles downloading Excel files and organizing log files into date-based folder structure.
 """

@@ -1,0 +1,27 @@
+# Legacy Task List Configuration (v1 format)
+# =============================================
+# This format is still fully supported but is specific to the
+# BizbenchV1 project structure (fmwc / modeloff / wallstreetprep).
+#
+# How legacy navigation works:
+#   Path built from: file_path (template) + source_folder + task_name + "Task"
+#   Source mapping:
+#     fmwc          -> fmwc/
+#     modeloff      -> modeloff/
+#     wallstreetprep -> wsp/
+#
+# How legacy file upload works:
+#   Looks for files in: main_tasks/{source}/{task_name}/Task/ (local disk)
+#   Detects workbook automatically by source conventions:
+#     fmwc          -> *model.xlsx
+#     modeloff      -> first .xlsx/.xlsm
+#     wallstreetprep -> *-before.xlsx
+#   Uploads everything else (PDFs, data files) into the add-in panel.
+#
+# For new projects, use the v2 format in sample_tasks.yaml instead.
+
+task_source: "modeloff"
+
+tasks:
+  - task_name: "MO13 Round 1 - Sec 1 - MCQ"
+  - task_name: "MO14 Round 1 - Sec 1 - MCQ"

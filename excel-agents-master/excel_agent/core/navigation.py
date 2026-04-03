@@ -192,50 +192,77 @@ class Navigation:
             return None
 
     @staticmethod
+    def _build_legacy_path(
+        task_name: str,
+        task_source: str,
+        base_path: list = None,
+    ) -> list:
+        """
+        Build OneDrive folder path from legacy config fields.
+
+        Legacy mapping:
+            file_path + source_folder + task_name + "Task"
+        where source_folder is:
+            fmwc → "fmwc", modeloff → "modeloff", wallstreetprep → "wsp"
+        """
+        if base_path is None:
+            base_path = ["My files", "main_tasks"]
+
+        source_map = {
+            "fmwc": "fmwc",
+            "modeloff": "modeloff",
+            "wallstreetprep": "wsp",
+        }
+        folder = source_map.get(task_source)
+        if folder is None:
+            raise ValueError(
+                f"Unknown task_source: '{task_source}'. "
+                f"Use onedrive_path for custom sources, or one of: {list(source_map)}"
+            )
+        return base_path + [folder, task_name, "Task"]
+
+    @staticmethod
     async def navigate_to_task_folder(
         page,
         task_name: str,
         task_source: str = "fmwc",
         base_path: list = None,
         direct_url: str = None,
+        onedrive_path: list = None,
     ):
         """
-        Navigate to the Task folder without opening Excel file.
+        Navigate to the task folder on OneDrive.
+
+        Resolution order:
+            1. direct_url  — goto() the URL, skip folder navigation
+            2. onedrive_path — click through these exact folder segments
+            3. Legacy — build path from base_path + task_source + task_name
 
         Args:
             page: Playwright page instance
             task_name: Name of the task
-            task_source: Source of tasks ("fmwc", "modeloff", "wallstreetprep")
-            base_path: OneDrive path segments (from config file_path), e.g.
-                       ["My files", "YOUR_PROJECT_ID", "main_tasks"]
-            direct_url: Optional direct OneDrive/SharePoint URL to the task folder.
-                        If provided, skips folder-by-folder navigation entirely.
+            task_source: (Legacy) Source of tasks ("fmwc", "modeloff", "wallstreetprep")
+            base_path: (Legacy) OneDrive path segments from config file_path
+            direct_url: Direct OneDrive/SharePoint URL to the task folder.
+            onedrive_path: Explicit list of OneDrive folder names to click through.
 
         Returns:
             Page object or None if navigation failed
         """
-        # If a direct URL is provided, use it instead of folder navigation
+        # Priority 1: Direct URL
         if direct_url:
             return await Navigation.navigate_to_direct_url(page, direct_url)
 
         try:
-            # Build OneDrive path dynamically based on task_source
-            if base_path is None:
-                base_path = ["My files", "main_tasks"]
-
-            if task_source == "fmwc":
-                file_path = base_path + ["fmwc", task_name, "Task"]
-            elif task_source == "modeloff":
-                file_path = base_path + ["modeloff", task_name, "Task"]
-            elif task_source == "wallstreetprep":
-                file_path = base_path + [
-                    "wsp",
-                    task_name,
-                    "Task",
-                ]
+            # Priority 2: Explicit onedrive_path
+            if onedrive_path:
+                file_path = list(onedrive_path)
+                logger.info(f"📁 Using explicit onedrive_path: {' > '.join(file_path)}")
             else:
-                logger.error(f"❌ Unknown task_source: {task_source}")
-                raise ValueError(f"Unknown task_source: {task_source}")
+                # Priority 3: Legacy path construction
+                file_path = Navigation._build_legacy_path(
+                    task_name, task_source, base_path
+                )
 
             logger.info(
                 f"📁 Navigating to Task folder ({task_source}): {' > '.join(file_path)}"

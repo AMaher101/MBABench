@@ -1,14 +1,18 @@
-# TabAI Agent Template Configuration
-# NOTE: task_source is now defined in each task list YAML file (not here)
-# This prevents mismatches between task files and source directories.
+# TabAI Agent — Template Configuration
+# =====================================
+# This file defines AGENT settings shared across all tasks.
+# Task-specific settings (navigation, files, output) go in your tasks YAML.
+#
+# See tasks_configs/examples/sample_tasks.yaml for task list format.
+
 template:
   agent_type: "tabai"
 
-  # Where to find files (base path - actual path constructed dynamically)
-  # task_source from tasks yaml determines the subfolder:
-  #   fmwc -> main_tasks/fmwc/{task_name}/Task
-  #   modeloff -> main_tasks/modeloff/{task_name}/Task
-  #   wallstreetprep -> main_tasks/wsp/{task_name}/Task
+  # Base directory for resolving upload_files paths in your tasks YAML.
+  # If omitted, paths are resolved from the current working directory.
+  # local_files_base: "project_data/"
+
+  # LEGACY: OneDrive base path (only needed for v1 task format)
   file_path:
     - "My files"
     - "YOUR_PROJECT_ID"

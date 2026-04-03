@@ -5,6 +5,16 @@ Supports loading from:
 1. Default config file (template YAML)
 2. Environment variables
 3. CLI arguments
+
+New-style task fields (v2):
+  onedrive_path   — explicit OneDrive folder path segments
+  template_file   — workbook to open (or "blank")
+  upload_files    — local files to upload into the add-in
+  solution_name   — base name for the output file
+  local_files_base — directory for resolving upload_files paths
+
+Legacy fields (v1, still supported):
+  file_path + task_source + task_name → constructed path
 """
 
 import logging
@@ -13,6 +23,17 @@ import os
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Per-task fields that should be forwarded from the task list YAML
+# into the per-task config dict (used by batch_automation_runner).
+TASK_LEVEL_FIELDS = {
+    "onedrive_path",
+    "direct_url",
+    "template_file",
+    "upload_files",
+    "solution_name",
+    "task_source",  # per-task override of template's task_source
+}
 
 
 class ConfigLoader:

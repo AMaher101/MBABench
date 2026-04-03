@@ -10,8 +10,6 @@ Automated batch execution of AI agents (TabAI, Claude, ChatGPT) as Excel Online 
 | Claude | Chrome (CDP) | Claude Excel add-in | `claude_excel_agent` |
 | ChatGPT | Chrome (CDP) | ChatGPT Excel add-in | `chatgpt_excel_agent` |
 
-The `agent_type` field in your template config determines which agent implementation is used. Each agent communicates with its respective AI service through an Excel Online add-in panel.
-
 ## Architecture
 
 This system follows a composable six-layer pipeline. Green components are user-configurable; blue components are stable framework internals.
@@ -24,21 +22,117 @@ This system follows a composable six-layer pipeline. Green components are user-c
 |-------|------|-----------|
 | **Input** | Task definitions, prompt templates, agent parameters | `tasks_configs/templates/*.yaml`, `tasks_configs/examples/*.yaml` |
 | **Orchestration** | Batch retry logic, subprocess isolation | `batch_automation_runner.py` |
-| **Engine** | Single-task pipeline (setup → navigate → AI → download) | `excel_agent/engine.py` |
+| **Engine** | Single-task pipeline (setup -> navigate -> AI -> download) | `excel_agent/engine.py` |
 | **Navigation** | OneDrive folder traversal OR direct URL (skip OneDrive) | `excel_agent/core/navigation.py`, task config `direct_url` |
 | **AI Interaction** | Claude, ChatGPT, TabAI, or your custom agent | `excel_agent/core/*_core.py` |
 | **Output** | Downloaded Excel files, validation, JSON logs | `excel_agent/core/file_organizer.py`, `completion_logger.py` |
 
-### Adapting for Your Research
-
-1. **Edit prompt templates** — `tasks_configs/templates/*.yaml` contains the prompt sequence sent to the AI. Replace with your own instructions.
-2. **Define your task list** — Create a YAML in `tasks_configs/examples/` listing your tasks.
-3. **Choose your model** — Set `model:` in the template (e.g., `opus_4_6`, `sonnet_4_6`, or `fast`/`standard`/`heavy` for ChatGPT).
-4. **Use direct URLs** — Set `direct_url` in task configs to skip OneDrive navigation entirely.
-5. **Customize validation** — Edit `validate_excel_file()` in `file_organizer.py` to match your expected output schema (e.g., change required sheet names).
-6. **Add a new agent** — Extend `AIAgentCore` base class with 4 methods: `_find_agent_frame()`, `_find_input_field()`, `_send_prompt()`, `_wait_for_response()`.
-
 > See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture guide.
+
+---
+
+## Task Configuration
+
+Configuration is split into two files:
+
+| File | Purpose | You edit per... |
+|------|---------|-----------------|
+| **Tasks YAML** (`tasks_configs/examples/`) | Where to go, what files to use, what to name output | Each task / project |
+| **Template YAML** (`tasks_configs/templates/`) | Which agent, what prompts, retry/timeout settings | Each agent type |
+
+### CLOUD vs LOCAL — Read This First
+
+```
+ CLOUD (OneDrive)                          LOCAL (your machine)
+ ─────────────────                          ────────────────────
+ onedrive_path / direct_url                 upload_files
+ = where the BROWSER navigates              = files from YOUR DISK uploaded
+   on OneDrive to find/create                 into the add-in chat panel
+   the workbook                               as attachments
+
+ template_file                              local_files_base
+ = which workbook to OPEN                   = directory for resolving
+   in that OneDrive folder                    upload_files paths
+
+ These are COMPLETELY INDEPENDENT.
+ Cloud paths and local file paths do NOT need to match.
+```
+
+### Tasks YAML Format
+
+```yaml
+tasks:
+  - task_name: "Q1_Revenue_Analysis"
+
+    # ── CLOUD: Where to go on OneDrive ──────────────────────
+    # Option A: Step-by-step folder path
+    onedrive_path:
+      - "My files"
+      - "ProjectX"
+      - "analyses"
+      - "Q1_Revenue_Analysis"
+
+    # Option B: Direct URL (overrides onedrive_path)
+    # direct_url: "https://onedrive.live.com/edit.aspx?..."
+
+    # Which workbook to open in the folder above.
+    # Omit or set to "blank" to create a new empty workbook.
+    template_file: "Q1_Template.xlsx"
+
+    # ── LOCAL: Files to upload into the AI panel ────────────
+    # Paths relative to local_files_base (or CWD).
+    # NOT placed on OneDrive — sent as add-in attachments.
+    upload_files:
+      - "problem_statements/q1_revenue.pdf"
+      - "data/quarterly_data.csv"
+
+    # ── OUTPUT: Solution file name ──────────────────────────
+    # Auto-appends _{agent_type}_{N}.xlsx for deduplication.
+    # Omit to default to "{task_name}_Solution".
+    solution_name: "Q1_Revenue_Solution"
+```
+
+**Navigation priority:** `direct_url` > `onedrive_path` > legacy path construction.
+
+### Template YAML Format
+
+```yaml
+template:
+  agent_type: "claude_excel_agent"
+
+  # Base directory for resolving upload_files paths.
+  # If omitted, resolved from current working directory.
+  # local_files_base: "project_data/"
+
+  prompts:
+    - "Analyze the attached data..."
+    - "Build the model..."
+
+  retry:
+    max_agent_attempts: 3
+    max_pipeline_attempts: 10
+    timeout_per_task_seconds: 7200
+
+  claude_excel_agent:
+    model: opus_4_6
+    # ... browser, logging, runtime settings
+```
+
+### Model Selection
+
+**Claude Excel add-in:**
+```yaml
+claude_excel_agent:
+  model: opus_4_6  # Options: opus_4_6, sonnet_4_6 (null = current default)
+```
+
+**ChatGPT Excel add-in:**
+```yaml
+chatgpt_excel_agent:
+  model: heavy  # Options: fast, standard, heavy (default: heavy)
+```
+
+---
 
 ## Prerequisites
 
@@ -55,49 +149,22 @@ This system follows a composable six-layer pipeline. Green components are user-c
 
 ### Playwright browser binaries
 
-Playwright requires browser binaries to be downloaded separately from the Python package:
-
 ```bash
-# Install all browsers (Firefox + Chromium)
 uv run playwright install
-
 # On Linux, you may also need system dependencies:
 uv run playwright install-deps
 ```
 
 ### Microsoft accounts & services
 
-- **Microsoft OneDrive account** — task files (problem statements, data files) must be uploaded to OneDrive
-- **Excel Online access** — requires a Microsoft 365 subscription (Business, Education, or Personal)
-- **AI add-in installed in Excel Online** — the appropriate add-in must be installed in your Excel Online account:
-  - **TabAI**: Install the "TabAI" add-in from the Office Store
-  - **Claude**: Install the "Claude by Anthropic" add-in
-  - **ChatGPT**: Install the "ChatGPT" add-in
+- **Microsoft OneDrive account** — task files must be accessible via OneDrive
+- **Excel Online access** — requires a Microsoft 365 subscription
+- **AI add-in installed in Excel Online** — the appropriate add-in must be installed:
+  - **TabAI**: "TabAI" from the Office Store
+  - **Claude**: "Claude by Anthropic"
+  - **ChatGPT**: "ChatGPT"
 
-### OneDrive folder structure
-
-Task files must be organized in OneDrive following this structure:
-
-```
-My files/
-└── YOUR_PROJECT_ID/
-    └── main_tasks/
-        ├── fmwc/
-        │   ├── Task_Name_1/
-        │   │   └── Task/          ← problem statement PDFs, data files
-        │   └── Task_Name_2/
-        │       └── Task/
-        ├── modeloff/
-        │   └── Task_Name_3/
-        │       └── Task/
-        └── wsp/
-            └── Task_Name_4/
-                └── Task/
-```
-
-The `file_path` in your template config points to the base path (e.g., `["My files", "YOUR_PROJECT_ID", "main_tasks"]`), and `task_source` + `task_name` determine the subfolder.
-
-Alternatively, you can provide a `direct_url` per task to skip folder-by-folder navigation entirely (see [Direct URL Navigation](#direct-url-navigation) below).
+---
 
 ## Installation
 
@@ -119,30 +186,30 @@ cp .env.example .env
 
 ### 2. Set up browser authentication
 
-Browser sessions must be established before running tasks. Re-run when sessions expire.
-
-**Firefox (TabAI):**
 ```bash
+# Firefox (TabAI)
 ./scripts/setup_firefox.sh
-```
-A Firefox window opens. Log into OneDrive and TabAI, then press `Ctrl+C` to save the session.
 
-**Chrome (Claude / ChatGPT):**
-```bash
+# Chrome (Claude / ChatGPT)
 ./scripts/setup_chrome.sh
 ```
-A Chrome window opens via CDP. Log into OneDrive and your AI agent. The session persists across runs.
 
 ### 3. Create a task list
 
-Copy `tasks_configs/examples/sample_tasks.yaml` and edit it with your tasks:
+Copy `tasks_configs/examples/sample_tasks.yaml` and edit it:
 
 ```yaml
 tasks:
-  - task_name: "My_DCF_Model"
-    task_source: "fmwc"
-  - task_name: "My_LBO_Analysis"
-    task_source: "modeloff"
+  - task_name: "My_Analysis"
+    onedrive_path:
+      - "My files"
+      - "my_project"
+      - "tasks"
+      - "My_Analysis"
+    template_file: "blank"
+    upload_files:
+      - "problem_statement.pdf"
+    solution_name: "My_Analysis_Solution"
 ```
 
 ### 4. Run
@@ -160,115 +227,28 @@ uv run python batch_automation_runner.py \
   --dry-run
 ```
 
-## Configuration
-
-### Runner Configs (`runner_configs/`)
-
-Each runner config specifies which agent template and script to use:
-
-| File | Agent |
-|------|-------|
-| `tabai.yaml` | TabAI (Firefox) |
-| `claude.yaml` | Claude (Chrome) |
-| `chatgpt.yaml` | ChatGPT (Chrome) |
-
-### Template Configs (`tasks_configs/templates/`)
-
-Templates define agent-specific settings: browser type, timeouts, prompts, and retry behavior.
-
-| File | Agent | Default Timeout |
-|------|-------|----------------|
-| `tabai.yaml` | TabAI | 90 min |
-| `claude.yaml` | Claude | 2 hours |
-| `chatgpt.yaml` | ChatGPT | 2 hours |
-
-Key template fields:
-- `agent_type` — selects which agent implementation to use (effectively selects the AI provider)
-- `model` — selects which model/reasoning mode to use within the provider (see below)
-- `file_path` — OneDrive base path to your task files
-- `prompts` — list of prompt strings sent sequentially to the agent
-- `retry` — retry and timeout configuration (see below)
-
-### Model Selection
-
-Each agent supports configurable model selection via the `model` field in the agent-specific config section:
-
-**Claude Excel add-in:**
-```yaml
-claude_excel_agent:
-  model: opus_4_6  # Options: opus_4_6, sonnet_4_6 (null = use current default)
-```
-
-| Config value | Add-in model |
-|---|---|
-| `opus_4_6` | Opus 4.6 |
-| `sonnet_4_6` | Sonnet 4.6 |
-| `null` / omitted | Uses current default |
-
-**ChatGPT Excel add-in:**
-```yaml
-chatgpt_excel_agent:
-  model: heavy  # Options: fast, standard, heavy (default: heavy)
-```
-
-| Config value | Reasoning mode |
-|---|---|
-| `fast` | Fast |
-| `standard` | Standard |
-| `heavy` | Heavy (default) |
-
-### Task List Format
-
-```yaml
-tasks:
-  - task_name: "Task_Directory_Name"   # Must match folder name in OneDrive
-    task_source: "fmwc"                # fmwc | modeloff | wallstreetprep
-    # skip: true                       # Optional: skip this task
-    # direct_url: "https://..."        # Optional: direct OneDrive URL (see below)
-```
-
-The `task_source` + `task_name` determine the OneDrive path:
-```
-{file_path} / {source_folder} / {task_name} / Task
-```
-
-Where `source_folder` maps: `fmwc` -> `fmwc`, `modeloff` -> `modeloff`, `wallstreetprep` -> `wsp`.
+---
 
 ## Direct URL Navigation
 
-By default, the system navigates through OneDrive's folder hierarchy step by step. If you have a direct link to a task folder, you can skip this by providing `direct_url` in your task config:
+If you have a direct link to a task folder, skip folder navigation entirely:
 
 ```yaml
 tasks:
   - task_name: "My_Task"
-    task_source: "fmwc"
     direct_url: "https://onedrive.live.com/?id=YOUR_FOLDER_ID&cid=YOUR_CID"
+    template_file: "blank"
+    upload_files:
+      - "case_study.pdf"
 ```
 
-When `direct_url` is set, the automation navigates directly to that URL instead of clicking through folders. This is useful when:
-- Your OneDrive folder structure doesn't match the expected layout
-- You want to use SharePoint URLs
-- Folder navigation is unreliable due to slow loading
+The URL should point to the OneDrive folder containing the task files.
 
-The URL should point to the folder containing the task files (the equivalent of the `Task/` folder).
-
-## Local File Paths
-
-Task files referenced in the `file_path` template config correspond to your OneDrive folder structure. The `file_path` list defines the base path segments that the automation navigates through:
-
-```yaml
-# In your template config
-file_path:
-  - "My files"
-  - "YOUR_PROJECT_ID"
-  - "main_tasks"
-```
-
-Downloaded solution files are saved locally to `{date}_{agentLabel}/{task_source}/{task_name}/`.
+---
 
 ## Retry Pipeline
 
-Each task runs in a retry loop with two independent counters. Configure in your template YAML under `retry:`:
+Each task runs in a retry loop with two independent counters:
 
 ```yaml
 retry:
@@ -277,11 +257,7 @@ retry:
   timeout_per_task_seconds: 7200  # Wall-clock timeout per task (seconds)
 ```
 
-**Infrastructure failures** (OneDrive unreachable, Excel won't load, add-in panel timeout) retry automatically without counting toward `max_agent_attempts`. Only failures where the agent actually ran and produced a result (timeout, wrong output, missing sheets) count as agent attempts.
-
 ### Task Statuses
-
-After each attempt, the task gets one of these statuses:
 
 | Status | Type | Meaning |
 |--------|------|---------|
@@ -303,6 +279,8 @@ After download, each Excel file is validated:
 3. Contains a sheet with "model" in the name
 4. Contains a sheet with "answers" in the name
 
+---
+
 ## CLI Options
 
 | Flag | Description |
@@ -318,10 +296,9 @@ After download, each Excel file is validated:
 ## Output
 
 Each task produces:
-- **Excel workbook** — downloaded to `{date}_{agentLabel}/{task_source}/{task_name}/`
-- **JSON completion log** — in `{date}_{agentLabel}/json_logs/` with timing, status, and prompt details
+- **Excel workbook** — downloaded to `{date}_{agentLabel}/solutions/`
+- **JSON completion log** — in `{date}_{agentLabel}/json_logs/`
 
-Completion log format:
 ```json
 {
   "session_start": "2026-03-19T10:00:00",
@@ -349,18 +326,13 @@ Completion log format:
 
 **Authentication expired**: Re-run `./scripts/setup_firefox.sh` or `./scripts/setup_chrome.sh`.
 
-**Agent panel won't load**: Check that the AI add-in is installed in your Excel Online account. Try opening Excel Online manually first.
+**Agent panel won't load**: Check that the AI add-in is installed in your Excel Online account.
 
 **Chrome CDP connection failed**: Make sure no other Chrome instances are using port 9222. Kill existing Chrome processes and retry.
 
-**Timeout on all tasks**: Increase `timeout_per_task_seconds` in your template config, or check your network connection to OneDrive.
+**Timeout on all tasks**: Increase `timeout_per_task_seconds` in your template config.
 
-**Playwright not installed**: If you see `playwright._impl._errors.Error: Executable doesn't exist`, run:
-```bash
-uv run playwright install
-# On Linux, also install system dependencies:
-uv run playwright install-deps
-```
+**Playwright not installed**: Run `uv run playwright install`.
 
 **Validate config before running**:
 ```bash
@@ -368,6 +340,28 @@ uv run python batch_automation_runner.py --dry-run \
   --tasks tasks_configs/my_tasks.yaml \
   --runner-config runner_configs/claude.yaml
 ```
+
+---
+
+## Legacy Task Format (v1)
+
+If you are migrating from the original BizbenchV1 format, the old `task_source` approach still works:
+
+```yaml
+task_source: "modeloff"
+tasks:
+  - task_name: "MO13 Round 1 - Sec 1 - MCQ"
+  - task_name: "MO14 Round 1 - Sec 1 - MCQ"
+```
+
+This builds the path from `file_path` (template) + source mapping + task_name + `"Task"`:
+- `fmwc` -> `fmwc/`
+- `modeloff` -> `modeloff/`
+- `wallstreetprep` -> `wsp/`
+
+File upload is automatic: everything in the local `Task/` folder except the workbook gets uploaded. See `tasks_configs/examples/legacy_tasks.yaml`.
+
+---
 
 ## Directory Structure
 
@@ -394,19 +388,10 @@ excel-agents/
 │       └── logging_setup.py      # Log configuration
 ├── batch_automation_runner.py    # Batch orchestrator (retry loop)
 ├── runner_configs/               # Agent runner configs
-│   ├── tabai.yaml
-│   ├── claude.yaml
-│   └── chatgpt.yaml
 ├── tasks_configs/
 │   ├── templates/                # Agent template configs
-│   │   ├── tabai.yaml
-│   │   ├── claude.yaml
-│   │   └── chatgpt.yaml
-│   └── examples/
-│       └── sample_tasks.yaml     # Example task list
-├── scripts/
-│   ├── setup_firefox.sh          # Firefox auth setup
-│   └── setup_chrome.sh           # Chrome auth setup
+│   └── examples/                 # Example task lists
+├── scripts/                      # Browser auth setup scripts
 ├── tests/                        # Retry pipeline tests
 ├── .env.example                  # Credential template
 └── pyproject.toml                # Dependencies

@@ -53,29 +53,51 @@ Set to `null` or omit to use whatever model is currently active in your session.
 
 ### Step 2 — Define your task list
 
+Each task specifies two independent things:
+1. **CLOUD** — where the browser goes on OneDrive (`onedrive_path` or `direct_url`)
+2. **LOCAL** — which files from your machine to upload into the add-in (`upload_files`)
+
+These do NOT need to mirror each other.
+
+**Excel add-in branch** (general format):
+```yaml
+tasks:
+  - task_name: "Q1-Revenue-Analysis"
+
+    # CLOUD: OneDrive navigation
+    onedrive_path:
+      - "My files"
+      - "ProjectX"
+      - "Q1-Revenue-Analysis"
+    template_file: "Q1_Template.xlsx"   # or "blank" for new workbook
+
+    # LOCAL: files to upload into the add-in panel
+    upload_files:
+      - "q1_data.csv"
+      - "problem_statement.pdf"
+
+    # OUTPUT: solution file naming
+    solution_name: "Q1_Revenue_Solution"
+```
+
+**Excel add-in branch** (direct URL, skip navigation):
+```yaml
+tasks:
+  - task_name: "Q2-Revenue-Analysis"
+    direct_url: "https://onedrive.live.com/edit.aspx?..."
+    template_file: "blank"
+    upload_files:
+      - "q2_data.csv"
+```
+
 **GUI branch** — files are local; you list them and they get uploaded into the chat:
 ```yaml
-# tasks_configs/examples/my_tasks.yaml
 task_source: "my_project"
 tasks:
   - task_name: "Q1-Revenue-Analysis"
     files_to_upload:
       - "/path/to/q1_data.csv"
       - "/path/to/problem_statement.pdf"
-  - task_name: "Q2-Revenue-Analysis"
-    files_to_upload:
-      - "/path/to/q2_data.csv"
-```
-
-**Excel add-in branch** — files live on OneDrive; the engine navigates there (or use `direct_url` to skip folder navigation):
-```yaml
-# tasks_configs/examples/my_tasks.yaml
-tasks:
-  - task_name: "Q1-Revenue-Analysis"
-    task_source: "fmwc"
-    # direct_url: "https://onedrive.live.com/edit.aspx?..."
-  - task_name: "Q2-Revenue-Analysis"
-    task_source: "fmwc"
 ```
 
 ### Step 3 — Run
