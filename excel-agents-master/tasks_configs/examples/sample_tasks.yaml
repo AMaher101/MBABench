@@ -20,44 +20,44 @@
 # ──────────────────────────────────────────────────────────────
 
 tasks:
-  # ── Example 1: Full explicit config ──────────────────────────
-  - task_name: "Example_DCF_Model"
+  # ── Example 1: General-purpose task ─────────────────────────
+  # Works for ANY project — not just finance.
+  - task_name: "Dolphin_Migration_Analysis"
 
-    # CLOUD — Where to navigate on OneDrive (folder-by-folder)
+    # CLOUD — Where to navigate on OneDrive (folder-by-folder).
+    # List the folder names you'd click through in the OneDrive UI.
     onedrive_path:
       - "My files"
-      - "YOUR_PROJECT_ID"
-      - "main_tasks"
-      - "fmwc"
-      - "Example_DCF_Model"
-      - "Task"
+      - "Research"
+      - "Marine"
+      - "Dolphins"
 
     # Which workbook to open in the folder above.
     # Use "blank" or omit to create a new empty workbook.
-    template_file: "DCF_Model.xlsx"
+    template_file: "Migration_Template.xlsx"
 
     # LOCAL — Files on your machine to upload into the AI panel.
-    # Paths are relative to local_files_base in the template config,
+    # Paths are relative to local_files_base (in template config),
     # or to the current working directory if local_files_base is not set.
     upload_files:
-      - "problem_statement.pdf"
-      - "data_tables.xlsx"
+      - "data/dolphin_sightings_2025.pdf"
+      - "data/gps_tracks.csv"
 
     # OUTPUT — Base name for the solution file.
-    # Final name: {solution_name}_{agent_type}_{N}.xlsx
-    # Omit to default to "{task_name}_Solution".
-    solution_name: "DCF_Model_Solution"
+    # Final name: {YYYYMMDD}_{HHMMSS}_{solution_name}_{agent}_{N}.xlsx
+    # Omit to use default: {task_name}_Solution_{source}_{agent}_Model.
+    solution_name: "Dolphin_Migration_Q1"
 
   # ── Example 2: Direct URL (skip folder navigation) ──────────
-  - task_name: "Example_LBO_Analysis"
+  - task_name: "Sales_Forecast"
     direct_url: "https://onedrive.live.com/?id=YOUR_FOLDER_ID&cid=YOUR_CID"
     template_file: "blank"
     upload_files:
-      - "lbo_case_study.pdf"
-    solution_name: "LBO_Analysis_Solution"
+      - "/Users/alex/reports/sales_data.xlsx"
+    solution_name: "Sales_Forecast_Solution"
 
   # ── Example 3: Minimal config (blank workbook, no uploads) ──
-  - task_name: "Example_Quick_Test"
+  - task_name: "Quick_Test"
     onedrive_path:
       - "My files"
       - "test_folder"

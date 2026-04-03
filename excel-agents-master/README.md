@@ -87,8 +87,8 @@ tasks:
       - "data/quarterly_data.csv"
 
     # ── OUTPUT: Solution file name ──────────────────────────
-    # Auto-appends _{agent_type}_{N}.xlsx for deduplication.
-    # Omit to default to "{task_name}_Solution".
+    # Final: {YYYYMMDD}_{HHMMSS}_{solution_name}_{agent}_{N}.xlsx
+    # Omit to use default naming: {task_name}_Solution_{source}_{agent}_Model.
     solution_name: "Q1_Revenue_Solution"
 ```
 
@@ -96,7 +96,10 @@ tasks:
 
 ### Template YAML Format
 
+Templates live in `tasks_configs/templates/`. The `prompts` list is what gets sent to the AI — **replace these with your own instructions** for your use case. The default prompts are financial modeling prompts; delete them and write whatever you need.
+
 ```yaml
+# tasks_configs/templates/claude.yaml
 template:
   agent_type: "claude_excel_agent"
 
@@ -105,8 +108,9 @@ template:
   # local_files_base: "project_data/"
 
   prompts:
-    - "Analyze the attached data..."
-    - "Build the model..."
+    - "Analyze the attached dataset and summarize key findings."
+    - "Build a model on a new sheet called 'model_main'."
+    - "Create an 'answers' sheet with your conclusions."
 
   retry:
     max_agent_attempts: 3
