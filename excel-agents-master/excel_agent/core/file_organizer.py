@@ -300,11 +300,10 @@ class FileOrganizer:
                 unique_filename = f"{timestamp}_{safe_task_name}_Solution_{task_source}_{agent_name}_Model.xlsx"
 
             output_path = output_dir / unique_filename
+            base_stem = output_path.stem
             counter = 1
             while output_path.exists():
-                output_path = (
-                    output_dir / f"{output_path.stem}_{counter}{output_path.suffix}"
-                )
+                output_path = output_dir / f"{base_stem}_{counter}{output_path.suffix}"
                 counter += 1
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
