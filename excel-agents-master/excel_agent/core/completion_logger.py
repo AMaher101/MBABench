@@ -123,7 +123,7 @@ class CompletionLogger:
             self.current_task["agent_failed"] = False
             self.current_task["agent_failed_reason"] = None
         elif status_enum in AGENT_STATUSES:
-            # Agent ran but failed (timeout, prompt_failed, missing_sheets)
+            # Agent ran but failed (timeout, prompt_failed)
             self.current_task["agent_failed"] = True
             self.current_task["agent_failed_reason"] = status_str
         else:

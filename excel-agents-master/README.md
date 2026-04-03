@@ -268,7 +268,6 @@ retry:
 | `SUCCESS` | Agent | Task completed, Excel validated |
 | `TIMEOUT` | Agent | Agent ran but exceeded time limit |
 | `PROMPT_FAILED` | Agent | Agent ran but couldn't execute prompts |
-| `MISSING_SHEETS` | Agent | Excel missing required "model"/"answers" sheets |
 | `DOWNLOAD_FAILED` | Pipeline | Download process failed |
 | `FILE_CORRUPTED` | Pipeline | Downloaded file invalid |
 | `NAV_FAILED` | Pipeline | Navigation to task failed |
@@ -280,8 +279,6 @@ retry:
 After download, each Excel file is validated:
 1. File exists and size > 0
 2. `openpyxl` can open it (not corrupted)
-3. Contains a sheet with "model" in the name
-4. Contains a sheet with "answers" in the name
 
 ---
 

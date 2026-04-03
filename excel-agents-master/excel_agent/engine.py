@@ -95,7 +95,7 @@ async def run_automation(config: dict) -> str:
 
     Returns:
         "success" — task completed and validated
-        "agent_failure" — agent ran but failed (prompt_failed, timeout, missing_sheets)
+        "agent_failure" — agent ran but failed (prompt_failed, timeout)
         "pipeline_failure" — infrastructure failure (nav_failed, excel_failed, etc.)
     """
     # Get no_hold from CLI args (set by batch runner or user)

@@ -26,7 +26,6 @@ class TaskStatus(str, Enum):
     SUCCESS = "success"
     TIMEOUT = "timeout"
     PROMPT_FAILED = "prompt_failed"
-    MISSING_SHEETS = "missing_sheets"
     # --- Pipeline statuses (infrastructure / pre-agent / post-agent) ---
     DOWNLOAD_FAILED = "download_failed"
     FILE_CORRUPTED = "file_corrupted"
@@ -40,7 +39,6 @@ AGENT_STATUSES = {
     TaskStatus.SUCCESS,
     TaskStatus.TIMEOUT,
     TaskStatus.PROMPT_FAILED,
-    TaskStatus.MISSING_SHEETS,
 }
 PIPELINE_STATUSES = {
     TaskStatus.DOWNLOAD_FAILED,
@@ -343,8 +341,6 @@ class FileOrganizer:
         1. File exists and path is not None
         2. File size > 0
         3. openpyxl can open it (not corrupted)
-        4. Has sheet containing "model" (case-insensitive)
-        5. Has sheet containing "answers" (case-insensitive)
 
         Returns:
             ValidationResult with is_valid, status, message, file_path, sheet_names
@@ -394,26 +390,6 @@ class FileOrganizer:
                 status=TaskStatus.FILE_CORRUPTED,
                 message=f"Cannot open Excel file: {e}",
                 file_path=file_path,
-            )
-
-        # Check 4: Has sheet containing "model" (case-insensitive)
-        has_model = any("model" in name.lower() for name in sheet_names)
-        # Check 5: Has sheet containing "answers" (case-insensitive)
-        has_answers = any("answers" in name.lower() for name in sheet_names)
-
-        missing = []
-        if not has_model:
-            missing.append("model")
-        if not has_answers:
-            missing.append("answers")
-
-        if missing:
-            return ValidationResult(
-                is_valid=False,
-                status=TaskStatus.MISSING_SHEETS,
-                message=f"Missing required sheet(s) containing: {missing}. Found: {sheet_names}",
-                file_path=file_path,
-                sheet_names=sheet_names,
             )
 
         logger.info(
