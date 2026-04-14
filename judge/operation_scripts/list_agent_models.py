@@ -31,10 +31,10 @@ def main():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT agent_model_name, COUNT(*) as attempt_count
+                SELECT agent_model_name, prompt_version, COUNT(*) as attempt_count
                 FROM task_attempts
-                GROUP BY agent_model_name
-                ORDER BY agent_model_name
+                GROUP BY agent_model_name, prompt_version
+                ORDER BY agent_model_name, prompt_version
                 """
             )
             rows = cur.fetchall()
@@ -45,11 +45,24 @@ def main():
         print("No attempts found.")
         return
 
-    print(f"{'Agent Model Name':<50} {'Attempts':>10}")
-    print("=" * 62)
-    for model_name, count in rows:
-        print(f"{model_name:<50} {count:>10}")
-    print(f"\nTotal unique models: {len(rows)}")
+    print(f"{'Agent Model Name':<50} {'Prompt Ver':>12} {'Attempts':>10}")
+    print("=" * 74)
+    current_model = None
+    model_total = 0
+    for model_name, prompt_version, count in rows:
+        if current_model is not None and model_name != current_model:
+            print(f"{'':>50} {'subtotal':>12} {model_total:>10}")
+            print("-" * 74)
+            model_total = 0
+        current_model = model_name
+        model_total += count
+        pv = str(prompt_version) if prompt_version is not None else "NULL"
+        print(f"{model_name:<50} {pv:>12} {count:>10}")
+    if current_model is not None:
+        print(f"{'':>50} {'subtotal':>12} {model_total:>10}")
+
+    unique_models = len(set(r[0] for r in rows))
+    print(f"\nTotal unique models: {unique_models}")
 
 
 if __name__ == "__main__":
