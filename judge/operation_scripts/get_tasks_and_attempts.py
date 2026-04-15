@@ -26,11 +26,27 @@ from utils.misc_utils import load_project_configs
 load_project_configs()
 
 DEFAULT_MODELS = [
-    "claude_web",
-    "chatgpt_excel_agent",
     "GPT-5.4 (Extended Pro)",
-    "chatgpt_web_extended",
+    "GPT-5.4 (Agent)",
+    "chatgpt_excel_agent",
+    "claude_excel_agent",
+    "claude_web",
+    "openpyxl_anthropic/claude-opus-4-6",
+    "openpyxl_openai/gpt-5.4",
 ]
+
+# Per-model prompt_version filter. When a model appears here, only attempts
+# whose prompt_version matches the specified value are considered valid.
+# Models not listed here are not filtered by prompt_version.
+DEFAULT_MODELS_PROMPT_VERSION: dict[str, int] = {
+    "openpyxl_openai/gpt-5.4": 1105,
+    "openpyxl_anthropic/claude-opus-4-6": 1105,
+    "claude_web": 8,
+    "claude_excel_agent": 8,
+    "chatgpt_excel_agent": 8,
+    "GPT-5.4 (Extended Pro)": 9,
+    "GPT-5.4 (Agent)": 9,
+}
 
 
 def get_db_connection():
@@ -79,13 +95,21 @@ def get_all_active_tasks(conn):
         return cur.fetchall()
 
 
-def get_attempts_for_tasks(conn, task_ids, model_names):
-    """Fetch non-failed, non-deprecated attempts for given tasks and models."""
+def get_attempts_for_tasks(conn, task_ids, model_names, prompt_versions=None):
+    """Fetch non-failed, non-deprecated attempts for given tasks and models.
+
+    Filters out attempts with empty attempt_files, applies the optional
+    per-model prompt_version filter, then keeps only the latest attempt per
+    (task_id, agent_model_name).
+
+    Args:
+        prompt_versions: dict mapping model name -> required prompt_version.
+            Attempts for listed models are kept only if their prompt_version matches.
+    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT DISTINCT ON (task_id, agent_model_name)
-                   id, task_id, agent_model_name, agent_model_type,
+            SELECT id, task_id, agent_model_name, agent_model_type,
                    attempt_files, prompt_files, start_time, end_time,
                    time_taken_min, cost, prompt_version
             FROM task_attempts
@@ -93,11 +117,33 @@ def get_attempts_for_tasks(conn, task_ids, model_names):
               AND agent_model_name = ANY(%s)
               AND agent_failed = false
               AND deprecated = false
+              AND attempt_files IS NOT NULL
+              AND attempt_files::text NOT IN ('null', '[]', '{}')
             ORDER BY task_id, agent_model_name, id DESC
             """,
             (task_ids, model_names),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    if prompt_versions:
+        rows = [
+            r
+            for r in rows
+            if r["agent_model_name"] not in prompt_versions
+            or r["prompt_version"] == prompt_versions[r["agent_model_name"]]
+        ]
+
+    # Dedup: keep latest id per (task_id, agent_model_name). Rows are already
+    # ordered by id DESC, so the first occurrence wins.
+    seen: set[tuple[int, str]] = set()
+    deduped = []
+    for r in rows:
+        key = (r["task_id"], r["agent_model_name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    return deduped
 
 
 def get_all_attempts_for_tasks(conn, task_ids, model_names):
@@ -199,6 +245,12 @@ def main():
         default=DEFAULT_MODELS,
         help=f"Model names to filter attempts by (default: {DEFAULT_MODELS})",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Output directory for downloaded files (default: $SCRATCH/tasks).",
+    )
     args = parser.parse_args()
 
     if not args.all and not args.task_ids:
@@ -212,7 +264,10 @@ def main():
         else:
             task_ids = args.task_ids
             tasks = get_tasks_by_ids(conn, task_ids)
-        attempts = get_attempts_for_tasks(conn, task_ids, args.models)
+        prompt_versions = (
+            DEFAULT_MODELS_PROMPT_VERSION if args.models == DEFAULT_MODELS else None
+        )
+        attempts = get_attempts_for_tasks(conn, task_ids, args.models, prompt_versions)
         all_attempts = get_all_attempts_for_tasks(conn, task_ids, args.models)
     finally:
         conn.close()
@@ -233,8 +288,10 @@ def main():
     for attempt in attempts:
         attempts_by_task.setdefault(attempt["task_id"], []).append(attempt)
 
-    scratch = get_scratch_path()
-    output_dir = scratch / "tasks"
+    if args.output_dir is not None:
+        output_dir = args.output_dir
+    else:
+        output_dir = get_scratch_path() / "tasks"
     s3_client = boto3.client("s3")
 
     skipped_tasks = 0
@@ -280,7 +337,9 @@ def main():
             )
 
     print(f"\nDone. Files saved to {output_dir}/")
-    print(f"Tasks: {len(tasks)} ({skipped_tasks} skipped), Attempts: {len(attempts)} ({skipped_attempts} skipped)")
+    print(
+        f"Tasks: {len(tasks)} ({skipped_tasks} skipped), Attempts: {len(attempts)} ({skipped_attempts} skipped)"
+    )
 
 
 if __name__ == "__main__":
