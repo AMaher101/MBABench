@@ -6,11 +6,17 @@ Valid attempts: agent_failed = false AND deprecated = false.
 Usage:
     source judge/project_configs.sh
 
+    # No task flag - use DEFAULT_TASK_IDS
+    python judge/operation_scripts/check_attempt_completion.py
+
     # Single task - list unique agents with valid attempts
     python judge/operation_scripts/check_attempt_completion.py --task-id 42
 
     # Multiple tasks - completion matrix across all agents
     python judge/operation_scripts/check_attempt_completion.py --task-ids 42 43 44
+
+    # All non-deprecated tasks - completion matrix across all agents
+    python judge/operation_scripts/check_attempt_completion.py --all-tasks
 
     # Restrict to specific agent models
     python judge/operation_scripts/check_attempt_completion.py --task-ids 42 43 --models "gpt-4o" "claude-sonnet-4-20250514"
@@ -38,10 +44,13 @@ load_project_configs()
 # models are considered unless overridden by --models / --all-models.
 # ---------------------------------------------------------------------------
 DEFAULT_MODELS: list[str] = [
-    "GPT-5.2",
+    "GPT-5.4 (Extended Pro)",
+    "GPT-5.4 (Agent)",
+    "chatgpt_excel_agent",
     "claude_excel_agent",
     "claude_web",
-    "openpyxl_openai/gpt-5.3-codex",
+    "openpyxl_anthropic/claude-opus-4-6",
+    "openpyxl_openai/gpt-5.4",
 ]
 
 # Optional: per-model prompt_version filter. When a model appears here, only
@@ -49,8 +58,30 @@ DEFAULT_MODELS: list[str] = [
 # Models not listed here are not filtered by prompt_version.
 # Example: {"GPT-4": 2} means only GPT-4 attempts with prompt_version=2 are kept.
 DEFAULT_MODELS_PROMPT_VERSION: dict[str, int] = {
-    "openpyxl_openai/gpt-5.3-codex": 1004,
+    "openpyxl_openai/gpt-5.4": 1105,
+    "openpyxl_anthropic/claude-opus-4-6": 1105,
+    "claude_web": 8,
+    "claude_excel_agent": 8,
+    "chatgpt_excel_agent": 8,
 }
+
+# ---------------------------------------------------------------------------
+# Optional: hard-code a default task list here. When non-empty, these task IDs
+# are used unless overridden by --task-id / --task-ids / --all-tasks.
+# ---------------------------------------------------------------------------
+DEFAULT_TASK_IDS: list[int] = [
+    61,
+    108,
+    166,
+    168,
+    169,
+    187,
+    222,
+    321,
+    327,
+    355,
+    389,
+]
 
 
 def get_db_connection():
@@ -123,6 +154,15 @@ def fetch_all_agent_models(conn, models=None):
 
     with conn.cursor() as cur:
         cur.execute(query, params)
+        return [row[0] for row in cur.fetchall()]
+
+
+def fetch_all_task_ids(conn):
+    """Return all non-deprecated task IDs."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM tasks WHERE deprecated = false OR deprecated IS NULL ORDER BY id"
+        )
         return [row[0] for row in cur.fetchall()]
 
 
@@ -217,6 +257,30 @@ def print_multi_task(task_ids, task_names, attempts, all_models):
             missing_str = ", ".join(str(t) for t in missing)
             print(f"    Missing tasks: [{missing_str}]")
 
+    # Summary: completion rate per model, broken down by prompt_version
+    print("\n" + "=" * 80)
+    print("Summary: completion rate per model (by prompt_version)")
+    print("=" * 80)
+
+    for model in all_models:
+        # Group attempts by (task_id, prompt_version)
+        pv_tasks: dict[str, set[int]] = {}
+        for tid in task_ids:
+            for row in lookup.get((tid, model), []):
+                pv = row.get("prompt_version")
+                pv_key = str(pv) if pv is not None else "none"
+                pv_tasks.setdefault(pv_key, set()).add(tid)
+
+        if not pv_tasks:
+            print(f"\n  {model}: no valid attempts")
+            continue
+
+        print(f"\n  {model}:")
+        for pv_key in sorted(pv_tasks):
+            count = len(pv_tasks[pv_key])
+            rate = count / len(task_ids) * 100
+            print(f"    prompt_v={pv_key}: {count}/{len(task_ids)} ({rate:.0f}%)")
+
     print()
 
 
@@ -242,7 +306,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Check valid attempt completion per agent model."
     )
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument(
         "--task-id",
         type=int,
@@ -253,6 +317,12 @@ def main():
         type=int,
         nargs="+",
         help="List of task IDs to check completion across.",
+    )
+    group.add_argument(
+        "--all-tasks",
+        action="store_true",
+        default=False,
+        help="Check completion against all non-deprecated tasks in the database.",
     )
     parser.add_argument(
         "--models",
@@ -270,9 +340,29 @@ def main():
 
     models, prompt_versions = resolve_models(args.models, args.all_models)
 
-    task_ids = [args.task_id] if args.task_id else args.task_ids
-
     conn = get_db_connection()
+
+    if args.all_tasks:
+        task_ids = fetch_all_task_ids(conn)
+        if not task_ids:
+            print("No non-deprecated tasks found in the database.")
+            conn.close()
+            return
+        print(f"Found {len(task_ids)} non-deprecated tasks.")
+    elif args.task_id is not None:
+        task_ids = [args.task_id]
+    elif args.task_ids:
+        task_ids = args.task_ids
+    elif DEFAULT_TASK_IDS:
+        task_ids = DEFAULT_TASK_IDS
+        print(f"Using DEFAULT_TASK_IDS ({len(task_ids)} tasks).")
+    else:
+        print(
+            "Error: no tasks specified. Provide --task-id, --task-ids, --all-tasks, "
+            "or set DEFAULT_TASK_IDS."
+        )
+        conn.close()
+        sys.exit(1)
     try:
         task_names = fetch_task_names(conn, task_ids)
 
@@ -283,7 +373,7 @@ def main():
 
         attempts = fetch_valid_attempts(conn, task_ids, models, prompt_versions)
 
-        if args.task_id:
+        if args.task_id and not args.all_tasks:
             print_single_task(args.task_id, task_names, attempts)
         else:
             all_models = fetch_all_agent_models(conn, models)
