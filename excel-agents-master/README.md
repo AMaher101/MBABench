@@ -88,11 +88,11 @@ tasks:
 
     # ── OUTPUT: Solution file name ──────────────────────────
     # Final: {YYYYMMDD}_{HHMMSS}_{solution_name}_{agent}_{N}.xlsx
-    # Omit to use default naming: {task_name}_Solution_{source}_{agent}_Model.
+    # Omit to use default naming: {task_name}_Solution_{agent}_Model.
     solution_name: "Q1_Revenue_Solution"
 ```
 
-**Navigation priority:** `direct_url` > `onedrive_path` > legacy path construction.
+**Navigation priority:** `direct_url` > `onedrive_path` > task-source shorthand.
 
 ### Template YAML Format
 
@@ -181,14 +181,21 @@ uv run playwright install
 
 ## Quick Start
 
-### 1. Set up credentials
+### 1. Set up credentials (REQUIRED)
+
+The browser logs into your Microsoft 365 account to access Excel Online.
+Without these credentials every task will fail at the navigation step.
 
 ```bash
 cp .env.example .env
-# Edit .env with your OneDrive credentials
+# Edit .env and set ONEDRIVE_EMAIL and ONEDRIVE_PASSWORD
 ```
 
 ### 2. Set up browser authentication
+
+These scripts launch an interactive browser session where you complete the
+Microsoft 365 sign-in (handling 2FA, MFA prompts, etc.) once. The browser
+stores the session locally so subsequent automated runs reuse the login.
 
 ```bash
 # Firefox (TabAI)

@@ -192,40 +192,39 @@ class Navigation:
             return None
 
     @staticmethod
-    def _build_legacy_path(
+    def _build_shorthand_path(
         task_name: str,
         task_source: str,
         base_path: list = None,
     ) -> list:
         """
-        Build OneDrive folder path from legacy config fields.
+        Build a OneDrive folder path from the task-source shorthand fields.
 
-        Legacy mapping:
-            file_path + source_folder + task_name + "Task"
-        where source_folder is:
-            fmwc → "fmwc", modeloff → "modeloff", wallstreetprep → "wsp"
+        Path layout:
+            base_path + source_folder + task_name + "Task"
+        where source_folder is the task_source itself, except for the
+        historical alias `wallstreetprep` -> `wsp`.
         """
+        if not task_source:
+            raise ValueError(
+                "task_source is required for shorthand navigation. "
+                "Set `task_source` in your task config, or provide an "
+                "explicit `onedrive_path` / `direct_url` instead."
+            )
+
         if base_path is None:
             base_path = ["My files", "main_tasks"]
 
-        source_map = {
-            "fmwc": "fmwc",
-            "modeloff": "modeloff",
-            "wallstreetprep": "wsp",
-        }
-        folder = source_map.get(task_source)
-        if folder is None:
-            raise ValueError(
-                f"Unknown task_source: '{task_source}'. "
-                f"Use onedrive_path for custom sources, or one of: {list(source_map)}"
-            )
+        # Historical alias kept for backward compatibility with the bundled
+        # example sources. Any other source name is used as-is.
+        folder = "wsp" if task_source == "wallstreetprep" else task_source
         return base_path + [folder, task_name, "Task"]
 
     @staticmethod
     async def navigate_to_task_folder(
         page,
         task_name: str,
-        task_source: str = "fmwc",
+        task_source: str = "",
         base_path: list = None,
         direct_url: str = None,
         onedrive_path: list = None,
@@ -234,20 +233,22 @@ class Navigation:
         Navigate to the task folder on OneDrive.
 
         Resolution order:
-            1. direct_url  — goto() the URL, skip folder navigation
-            2. onedrive_path — click through these exact folder segments
-            3. Legacy — build path from base_path + task_source + task_name
+            1. direct_url       — goto() the URL, skip folder navigation
+            2. onedrive_path    — click through these exact folder segments
+            3. Task-source shorthand — build path from base_path + task_source + task_name
 
         Args:
-            page: Playwright page instance
-            task_name: Name of the task
-            task_source: (Legacy) Source of tasks ("fmwc", "modeloff", "wallstreetprep")
-            base_path: (Legacy) OneDrive path segments from config file_path
+            page: Playwright page instance.
+            task_name: Name of the task.
+            task_source: Optional source name used by the shorthand path
+                builder (any string is accepted; doubles as the folder name).
+            base_path: Optional OneDrive path segments used as the parent of
+                the source folder (defaults to ["My files", "main_tasks"]).
             direct_url: Direct OneDrive/SharePoint URL to the task folder.
             onedrive_path: Explicit list of OneDrive folder names to click through.
 
         Returns:
-            Page object or None if navigation failed
+            Page object or None if navigation failed.
         """
         # Priority 1: Direct URL
         if direct_url:
@@ -259,13 +260,14 @@ class Navigation:
                 file_path = list(onedrive_path)
                 logger.info(f"📁 Using explicit onedrive_path: {' > '.join(file_path)}")
             else:
-                # Priority 3: Legacy path construction
-                file_path = Navigation._build_legacy_path(
+                # Priority 3: Task-source shorthand path construction
+                file_path = Navigation._build_shorthand_path(
                     task_name, task_source, base_path
                 )
 
             logger.info(
-                f"📁 Navigating to Task folder ({task_source}): {' > '.join(file_path)}"
+                f"📁 Navigating to Task folder ({task_source or 'custom'}): "
+                f"{' > '.join(file_path)}"
             )
 
             # Navigate through the folder structure

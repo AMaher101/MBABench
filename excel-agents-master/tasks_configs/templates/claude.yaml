@@ -16,10 +16,10 @@ template:
   # local_files_base: "project_data/"
 
   # ──────────────────────────────────────────────────────────────
-  # LEGACY: OneDrive base path (only needed for v1 task format)
+  # OneDrive base path — only used by the task-source shorthand format
   # ──────────────────────────────────────────────────────────────
-  # If your tasks YAML uses task_source instead of onedrive_path,
-  # this base path + task_source + task_name + "Task" builds the path.
+  # If your tasks YAML uses `task_source` instead of `onedrive_path`,
+  # the runner builds the path as: file_path + task_source + task_name + "Task"
   file_path:
     - "My files"
     - "YOUR_PROJECT_ID"

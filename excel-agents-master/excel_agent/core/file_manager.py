@@ -4,8 +4,11 @@ File management utilities for the Excel Agent Engine.
 Handles file discovery, path resolution, and task file management.
 
 Supports two modes:
-  - **Explicit** (v2): caller provides `upload_files` and `template_file` directly.
-  - **Legacy** (v1): auto-discovers files from `main_tasks/{source}/{task}/Task/`.
+  - **Explicit (recommended for new projects):** caller provides `upload_files`
+    and `template_file` directly per task. See `tasks_configs/examples/sample_tasks.yaml`.
+  - **Task-source shorthand:** auto-discovers files from a sibling
+    `main_tasks/{task_source}/{task_name}/Task/` directory. Useful when many
+    tasks share a common parent. See `tasks_configs/examples/task_source_format.yaml`.
 """
 
 import logging
@@ -19,7 +22,7 @@ class FileManager:
     """Manages file discovery and path operations."""
 
     # ------------------------------------------------------------------
-    # Explicit file resolution (v2 config)
+    # Explicit file resolution
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -54,27 +57,39 @@ class FileManager:
         return resolved
 
     # ------------------------------------------------------------------
-    # Legacy helpers (v1 config)
+    # Task-source shorthand helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def get_local_task_files(task_name: str, task_source: str = "fmwc") -> List[str]:
+    def get_local_task_files(task_name: str, task_source: str) -> List[str]:
         """
         Get all files from local main_tasks/{task_source}/{task_name}/Task/ directory.
 
         Args:
-            task_name: Name of the task folder
-            task_source: Source of tasks ("fmwc", "modeloff", "wallstreetprep")
+            task_name: Name of the task folder.
+            task_source: Identifies the parent dataset folder under `main_tasks/`.
+                Any string is accepted; it doubles as the folder name. The
+                example sources bundled with this project are `fmwc`,
+                `modeloff`, and `wallstreetprep` (the last is aliased to
+                `wsp/` on disk for historical reasons).
 
         Returns:
             List of absolute file paths
         """
         try:
+            if not task_source:
+                logger.error(
+                    "❌ get_local_task_files called without a task_source. "
+                    "Set `task_source` in your task config, or use the "
+                    "explicit `upload_files` format instead."
+                )
+                return []
+
             logger.info(
                 f"🔍 Searching for local files for task: '{task_name}' (source: {task_source})"
             )
 
-            # Map task_source to folder name (wallstreetprep -> wsp)
+            # Map task_source to folder name (wallstreetprep -> wsp historical alias)
             folder_name = "wsp" if task_source == "wallstreetprep" else task_source
 
             # Construct path relative to current working directory:
@@ -144,20 +159,29 @@ class FileManager:
 
     @staticmethod
     def find_workbook_file(
-        file_list: List[str], task_source: str = "fmwc"
+        file_list: List[str], task_source: str = ""
     ) -> Optional[str]:
         """
-        Find pre-existing workbook based on task source conventions.
+        Find a pre-existing workbook in the local task folder.
+
+        For the example sources bundled with this project, source-specific
+        filename conventions are used:
+            fmwc           -> picks `*model.xlsx`
+            modeloff       -> picks the first `.xlsx` / `.xlsm`
+            wallstreetprep -> picks `*-before.xlsx`
+
+        For any other source (or no source), a generic detector picks the
+        first `.xlsx` / `.xlsm` that does not contain "solution" in its name.
 
         Args:
             file_list: List of file paths
-            task_source: "fmwc", "modeloff", or "wallstreetprep"
+            task_source: Optional source name; controls the matching pattern.
 
         Returns:
-            Path to workbook file, or None if not found
+            Path to workbook file, or None if not found.
         """
         logger.info(
-            f"🔍 Searching for workbook file in {len(file_list)} files (source: {task_source})..."
+            f"🔍 Searching for workbook file in {len(file_list)} files (source: {task_source or 'generic'})..."
         )
 
         for f in file_list:
@@ -169,24 +193,24 @@ class FileManager:
                 continue
 
             if task_source == "fmwc":
-                # FMWC: Look for files ending with 'model.xlsx'
                 if filename_lower.endswith("model.xlsx"):
-                    logger.info(f"✅ Found FMWC model file: {filename}")
-                    return f
-
-            elif task_source == "modeloff":
-                # ModelOff: Any .xlsx or .xlsm file (exclude PDFs and solution files)
-                if filename_lower.endswith((".xlsx", ".xlsm")):
-                    logger.info(f"✅ Found ModelOff workbook file: {filename}")
+                    logger.info(f"✅ Found fmwc model file: {filename}")
                     return f
 
             elif task_source == "wallstreetprep":
-                # WallStreetPrep: Files ending with '-Before.xlsx'
                 if filename_lower.endswith("-before.xlsx"):
-                    logger.info(f"✅ Found WallStreetPrep Before file: {filename}")
+                    logger.info(f"✅ Found wallstreetprep before file: {filename}")
                     return f
 
-        logger.warning(f"❌ No workbook file found for source '{task_source}'")
+            else:
+                # Generic detection (also covers `modeloff`): first .xlsx/.xlsm
+                if filename_lower.endswith((".xlsx", ".xlsm")):
+                    logger.info(f"✅ Found workbook file: {filename}")
+                    return f
+
+        logger.warning(
+            f"❌ No workbook file found (source: {task_source or 'generic'})"
+        )
         return None
 
     @staticmethod

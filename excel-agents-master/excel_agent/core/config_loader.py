@@ -6,15 +6,15 @@ Supports loading from:
 2. Environment variables
 3. CLI arguments
 
-New-style task fields (v2):
-  onedrive_path   — explicit OneDrive folder path segments
-  template_file   — workbook to open (or "blank")
-  upload_files    — local files to upload into the add-in
-  solution_name   — base name for the output file
-  local_files_base — directory for resolving upload_files paths
+Per-task fields used by the explicit task config format:
+  onedrive_path     — explicit OneDrive folder path segments
+  template_file     — workbook to open (or "blank")
+  upload_files      — local files to upload into the add-in
+  solution_name     — base name for the output file
+  local_files_base  — directory for resolving upload_files paths
 
-Legacy fields (v1, still supported):
-  file_path + task_source + task_name → constructed path
+Per-task fields used by the task-source shorthand format:
+  file_path + task_source + task_name → constructed OneDrive path
 """
 
 import logging
@@ -80,8 +80,8 @@ class ConfigLoader:
     def get_retry_settings(config: dict) -> dict:
         """
         Extract retry settings from config with fallback chain:
-        1. Top-level 'retry' section (preferred, new format)
-        2. Agent-specific settings (legacy format)
+        1. Top-level `retry:` section (preferred)
+        2. Per-agent block (e.g. `claude_excel_agent:` keys, kept as a fallback)
         3. Hard-coded defaults
 
         Args:
@@ -96,7 +96,7 @@ class ConfigLoader:
             "timeout_per_task_seconds": 7200,
         }
 
-        # Check for new-style 'retry' section first
+        # Check the top-level 'retry' section first
         retry_section = config.get("retry", {})
         if retry_section:
             return {
@@ -111,7 +111,7 @@ class ConfigLoader:
                 ),
             }
 
-        # Fallback to legacy agent-specific settings
+        # Fallback to per-agent block (older config layout)
         agent_type = config.get("agent_type", "tabai")
         agent_cfg = config.get(agent_type, {})
         return {

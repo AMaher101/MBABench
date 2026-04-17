@@ -102,7 +102,7 @@ class FileOrganizer:
         output_dir: Path,
         task_name: str,
         agent_name: str = "tabai",
-        task_source: str = "fmwc",
+        task_source: str = "",
     ) -> Optional[Path]:
         """Download Excel file using File > Create a Copy > Download a Copy."""
         dl_start_time = datetime.now()
@@ -294,8 +294,10 @@ class FileOrganizer:
                 # exceed Windows MAX_PATH (260 chars) for long task names.
                 unique_filename = f"{timestamp}_{base_name}{extension}"
             else:
-                # Agent and source aware filename
-                unique_filename = f"{timestamp}_{safe_task_name}_Solution_{task_source}_{agent_name}_Model.xlsx"
+                # Build the filename. Drop the task_source segment if empty so
+                # custom-source projects don't get an awkward double underscore.
+                source_segment = f"_{task_source}" if task_source else ""
+                unique_filename = f"{timestamp}_{safe_task_name}_Solution{source_segment}_{agent_name}_Model.xlsx"
 
             output_path = output_dir / unique_filename
             base_stem = output_path.stem
@@ -411,7 +413,7 @@ class FileOrganizer:
         json_file_path: Optional[str],
         base_dir: Optional[Path] = None,
         agent_name: str = "tabai",
-        task_source: str = "fmwc",
+        task_source: str = "",
     ) -> dict:
         """Organize all task files into date-based folder structure."""
         try:

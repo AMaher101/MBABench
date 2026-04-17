@@ -150,27 +150,25 @@ async def run_automation(config: dict) -> str:
 
         # Get task name and source from config (set by batch automation runner)
         task_name = config["task_name"]
-        task_source = config.get(
-            "task_source", "fmwc"
-        )  # Default to fmwc for backward compatibility
+        task_source = config.get("task_source", "")
         direct_url = config.get("direct_url")
-        onedrive_path = config.get("onedrive_path")  # v2: explicit path
-        template_file = config.get("template_file")  # v2: explicit workbook
-        explicit_upload_files = config.get("upload_files")  # v2: explicit uploads
-        solution_name = config.get("solution_name")  # v2: explicit output name
-        local_files_base = config.get("local_files_base")  # v2: base for uploads
+        onedrive_path = config.get("onedrive_path")  # explicit OneDrive path
+        template_file = config.get("template_file")  # explicit workbook
+        explicit_upload_files = config.get("upload_files")  # explicit uploads
+        solution_name = config.get("solution_name")  # explicit output name
+        local_files_base = config.get("local_files_base")  # base dir for uploads
 
         # Use agent_type directly as agent_name (no mapping needed)
         agent_name = agent_type
 
         # --- File resolution ---
-        # v2: explicit upload_files list
+        # Explicit format: caller listed the upload files in the task config
         if explicit_upload_files is not None:
             logger.info("📤 Using explicit upload_files from task config")
             files_to_upload = file_mgr.resolve_upload_files(
                 explicit_upload_files, local_files_base
             )
-            # v2: template_file tells us whether to open an existing workbook
+            # template_file (when present) names a workbook on OneDrive to open
             if template_file and template_file.lower() != "blank":
                 workbook_file = template_file  # name of file on OneDrive
                 logger.info(f"📊 Will open template workbook: {template_file}")
@@ -178,8 +176,8 @@ async def run_automation(config: dict) -> str:
                 workbook_file = None
                 logger.info("📝 Will create new blank workbook")
         else:
-            # Legacy (v1): auto-discover files from local main_tasks/ folder
-            logger.info(f"📦 Task source: {task_source}")
+            # Task-source shorthand: auto-discover from local main_tasks/ folder.
+            logger.info(f"📦 Task source: {task_source or '(none)'}")
             logger.info(f"🔍 Searching for workbook in {task_source}/{task_name}/Task/")
 
             local_files = file_mgr.get_local_task_files(task_name, task_source)
@@ -357,7 +355,9 @@ async def run_automation(config: dict) -> str:
 
                 # --- Navigate to task folder with retries ---
                 if final_task_status is None:
-                    logger.info(f"📁 Navigating to task folder (source: {task_source})")
+                    logger.info(
+                        f"📁 Navigating to task folder (source: {task_source or 'custom'})"
+                    )
                     nav = Navigation()
                     task_page = None
                     NAV_TIMEOUT = 120
@@ -411,16 +411,20 @@ async def run_automation(config: dict) -> str:
                     if solution_name:
                         base_name = f"{solution_name}_{agent_name}"
                     else:
+                        # Drop the source segment when no task_source is set
+                        # so custom-source projects don't get a stray underscore.
+                        source_segment = f"_{task_source}" if task_source else ""
                         base_name = (
-                            f"{task_name}_Solution_{task_source}_{agent_name}_Model"
+                            f"{task_name}_Solution{source_segment}_{agent_name}_Model"
                         )
 
                     if workbook_file and attempt_number == 0:
                         logger.info("=" * 60)
                         logger.info("📊 OPENING EXISTING WORKBOOK AND CREATING COPY")
                         logger.info("=" * 60)
-                        # v2: template_file is already just the filename
-                        # v1: workbook_file is a full local path — extract name
+                        # In the explicit format, template_file is already a
+                        # plain filename. In the shorthand format, workbook_file
+                        # is a full local path — extract just the name.
                         workbook_filename = (
                             workbook_file
                             if explicit_upload_files is not None
@@ -1100,9 +1104,9 @@ Examples:
         ConfigLoader.apply_runtime_overrides(config, args)
         ConfigLoader.apply_env_overrides(config)
 
-        # Validate required config sections
-        # file_path is only required for legacy configs (not needed if
-        # onedrive_path or direct_url is used, which are set per-task).
+        # Validate required config sections.
+        # `file_path` is only required by the task-source shorthand format —
+        # tasks that provide `onedrive_path` or `direct_url` don't need it.
         if "prompts" not in config or not config["prompts"]:
             print("❌ Config validation failed. Missing required section: prompts")
             print("   Make sure your config file has a 'prompts' section with values.")

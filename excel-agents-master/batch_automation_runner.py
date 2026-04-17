@@ -206,8 +206,10 @@ class TaskRunner:
             if agent_name:
                 config["agent_type"] = agent_name
 
-            # Set task_source from template (default to "fmwc" for backward compatibility)
-            config["task_source"] = template_copy.get("task_source", "fmwc")
+            # task_source is optional — used by the shorthand-format task
+            # configs. Tasks that use the explicit `upload_files` format don't
+            # need it.
+            config["task_source"] = template_copy.get("task_source", "")
 
             # If agent_name is specified, only include that agent's config
             if agent_name and agent_name in template_copy:
@@ -217,7 +219,7 @@ class TaskRunner:
                     {
                         "file_path": template_copy.get("file_path", []),
                         "prompts": template_copy.get("prompts", []),
-                        "task_source": template_copy.get("task_source", "fmwc"),
+                        "task_source": template_copy.get("task_source", ""),
                         "prompt_version": template_copy.get("prompt_version"),
                         "local_files_base": template_copy.get("local_files_base"),
                         agent_name: agent_config,
@@ -237,7 +239,7 @@ class TaskRunner:
                     config["agent_name"] = agent_name
                     config["agent_type"] = agent_name
 
-            # Forward per-task fields (v2) — these override template defaults
+            # Forward per-task fields — these override template defaults
             for field in TASK_LEVEL_FIELDS:
                 if field in task:
                     config[field] = task[field]
@@ -558,9 +560,9 @@ def load_tasks(
     task_file_source = None  # task_source defined in the tasks yaml file
     if isinstance(data, dict):
         tasks_data = data.get("tasks", [])
-        task_file_source = data.get(
-            "task_source"
-        )  # e.g., "fmwc", "modeloff", "wallstreetprep"
+        # Optional shorthand identifier; example sources bundled with this
+        # project are "fmwc", "modeloff", and "wallstreetprep".
+        task_file_source = data.get("task_source")
     else:
         tasks_data = data if isinstance(data, list) else [data]
 
