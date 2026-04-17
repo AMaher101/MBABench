@@ -473,15 +473,13 @@ class ChatGPTCore(AIAgentCore):
                     break
                 except Exception:
                     continue
-            for ctx in [self.page] + self.page.frames:
-                try:
-                    await ctx.click(f'text="{self.get_addon_name()}"', timeout=3000)
-                    self._chatgpt_frame = None
-                    self._setup_completed = False
-                    await asyncio.sleep(3)
-                    return True
-                except Exception:
-                    continue
+            # Click add-in tile in the My Add-ins popup (uses JS evaluate
+            # to handle name mismatches like "Claude by Anthropic for Excel")
+            if await self._click_addon_in_layer(self.get_addon_name()):
+                self._chatgpt_frame = None
+                self._setup_completed = False
+                await asyncio.sleep(3)
+                return True
 
             return False
         except Exception as e:

@@ -258,15 +258,13 @@ class ClaudeCore(AIAgentCore):
                     break
                 except Exception:
                     continue
-            for ctx in [self.page] + self.page.frames:
-                try:
-                    await ctx.click(f'text="{self.get_addon_name()}"', timeout=3000)
-                    self._claude_frame = None
-                    self._accepted_all_edits = False
-                    await asyncio.sleep(3)
-                    return True
-                except Exception:
-                    continue
+            # Click add-in tile in the My Add-ins popup (uses JS evaluate
+            # to handle name mismatches like "Claude by Anthropic for Excel")
+            if await self._click_addon_in_layer(self.get_addon_name()):
+                self._claude_frame = None
+                self._accepted_all_edits = False
+                await asyncio.sleep(3)
+                return True
 
             return False
         except Exception as e:
@@ -568,8 +566,9 @@ class ClaudeCore(AIAgentCore):
 
             await asyncio.sleep(0.5)
 
-            # Dismiss clarification dialog if it appeared between prompts
+            # Dismiss blocking dialogs if they appeared between prompts
             await self._dismiss_clarification_dialog()
+            await self._dismiss_permission_dialog()
 
             # Click send button
             send_btn = await frame.query_selector('[data-testid="send-button"]')
@@ -787,6 +786,61 @@ class ClaudeCore(AIAgentCore):
 
         return False
 
+    async def _dismiss_permission_dialog(self) -> bool:
+        """Auto-approve the 'Claude wants to build...' permission dialog.
+
+        The Claude add-in shows a modal when it wants to modify the
+        spreadsheet.  Three buttons are offered:
+
+        - **Deny** (Esc)
+        - **Dangerously always allow** (Ctrl+Enter)  ← preferred
+        - **Allow once** (Enter)  ← fallback
+
+        We click "Dangerously always allow" so the dialog never reappears
+        for the rest of the session.  If that button isn't found we fall
+        back to "Allow once".
+
+        Returns True if a dialog was found and dismissed, False otherwise.
+        """
+        for f in self.page.frames:
+            try:
+                buttons = await f.query_selector_all("button")
+                allow_always_btn = None
+                allow_once_btn = None
+
+                for btn in buttons:
+                    try:
+                        text = (await btn.text_content() or "").strip()
+                        if not text:
+                            continue
+                        text_lower = text.lower()
+                        if "dangerously" in text_lower and "allow" in text_lower:
+                            if await btn.is_visible():
+                                allow_always_btn = btn
+                        elif text_lower == "allow once":
+                            if await btn.is_visible():
+                                allow_once_btn = btn
+                    except Exception:
+                        continue
+
+                target = allow_always_btn or allow_once_btn
+                if target:
+                    label = (
+                        "Dangerously always allow"
+                        if target is allow_always_btn
+                        else "Allow once"
+                    )
+                    logger.info(f"🔓 Permission dialog detected, clicking '{label}'...")
+                    await target.click(force=True)
+                    await asyncio.sleep(1)
+                    logger.info("✅ Permission dialog dismissed")
+                    return True
+
+            except Exception:
+                continue
+
+        return False
+
     async def wait_for_completion(
         self, prompt_number: int, initial_counts: dict = None
     ) -> bool:
@@ -842,9 +896,10 @@ class ClaudeCore(AIAgentCore):
                 if stop_visible:
                     # Claude is processing
                     saw_stop_button = True
-                    # Check for clarification dialog every ~5 seconds
+                    # Check for blocking dialogs every ~5 seconds
                     if elapsed % 5 == 0:
                         await self._dismiss_clarification_dialog()
+                        await self._dismiss_permission_dialog()
                     if elapsed % 10 == 0:
                         logger.info(
                             f"   [{elapsed}s] Claude processing... (responses: {current_response_count})"
@@ -854,10 +909,11 @@ class ClaudeCore(AIAgentCore):
                 # Stop button not visible
                 if not saw_stop_button:
                     # Haven't seen Claude start yet - keep waiting
-                    # Also check for clarification dialog (edge case: Claude
+                    # Also check for blocking dialogs (edge case: Claude
                     # asks a question before the Stop button appears)
                     if elapsed % 5 == 0:
                         await self._dismiss_clarification_dialog()
+                        await self._dismiss_permission_dialog()
                     if elapsed % 10 == 0:
                         logger.info(
                             f"   [{elapsed}s] Waiting for Claude to start... (responses: {current_response_count})"

@@ -77,16 +77,14 @@ class FileManager:
             # Map task_source to folder name (wallstreetprep -> wsp)
             folder_name = "wsp" if task_source == "wallstreetprep" else task_source
 
-            # Construct path relative to current working directory
-            # One level above agentic_workflow, then main_tasks
+            # Construct path relative to current working directory:
+            #   ../main_tasks/{folder_name}/{task_name}/Task
             task_path = Path("..") / "main_tasks" / folder_name / task_name / "Task"
             logger.info(f"   Trying path 1 (relative to cwd): {task_path.absolute()}")
 
-            # Also try from script directory (go up 2 levels from excel_agent)
+            # Fallback: resolve relative to this file's location, assuming the
+            # repo sits alongside a sibling main_tasks/ directory.
             if not task_path.exists():
-                # script is in: .../Hong_ai_excel/agentic_workflow/excel_agent/core/
-                # we need: .../Hong_ai_excel/main_tasks/{folder_name}/{task_name}/Task/
-                # so: parent (excel_agent) → parent (agentic_workflow) → parent (Hong_ai_excel) → main_tasks
                 script_dir = Path(__file__).parent.parent  # core -> excel_agent
                 task_path = (
                     script_dir.parent.parent

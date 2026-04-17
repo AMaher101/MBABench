@@ -344,23 +344,28 @@ uv run python batch_automation_runner.py --dry-run \
 
 ---
 
-## Legacy Task Format (v1)
+## Alternative: Task-Source Shorthand Format
 
-If you are migrating from the original BizbenchV1 format, the old `task_source` approach still works:
+If all your tasks live under a shared parent folder on OneDrive and on disk,
+you can use the shorthand format below instead of listing paths per task.
+The runner builds each task's paths from a single `task_source` key plus
+the `task_name`:
 
 ```yaml
 task_source: "modeloff"
 tasks:
-  - task_name: "MO13 Round 1 - Sec 1 - MCQ"
-  - task_name: "MO14 Round 1 - Sec 1 - MCQ"
+  - task_name: "Round 1 - Section 1 - MCQ"
+  - task_name: "Round 1 - Section 2 - MCQ"
 ```
 
-This builds the path from `file_path` (template) + source mapping + task_name + `"Task"`:
-- `fmwc` -> `fmwc/`
-- `modeloff` -> `modeloff/`
-- `wallstreetprep` -> `wsp/`
+The OneDrive path becomes `file_path` (from the template) + `task_source` +
+`task_name` + `"Task"`. Local files are read from
+`main_tasks/{task_source}/{task_name}/Task/` (a `wallstreetprep` source maps
+to a `wsp/` folder).
 
-File upload is automatic: everything in the local `Task/` folder except the workbook gets uploaded. See `tasks_configs/examples/legacy_tasks.yaml`.
+File upload is automatic: everything in the local `Task/` folder except the
+workbook gets uploaded. See `tasks_configs/examples/task_source_format.yaml`
+for a complete example.
 
 ---
 

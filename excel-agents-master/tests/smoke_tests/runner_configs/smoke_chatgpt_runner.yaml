@@ -1,0 +1,11 @@
+# Runner config for ChatGPT smoke test
+template: "template_smoke_chatgpt.yaml"
+
+script: "excel_agent/engine.py"
+config_arg: "--config"
+python_cmd: "auto"
+
+default_extra_args:
+  - "--no-hold"
+
+env_vars: {}

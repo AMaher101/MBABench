@@ -1,0 +1,47 @@
+# Smoke Test: Claude Excel add-in
+# Sends trivial prompts to verify the full pipeline.
+# Expected: SUCCESS on first attempt, 3 sheets created.
+
+template:
+  agent_type: "claude_excel_agent"
+
+  file_path:
+    - "My files"
+    - "YOUR_PROJECT_ID"
+    - "main_tasks"
+
+  prompt_version: 2
+
+  prompts:
+    - "Create a new sheet called 'test_output' and write the word 'test' in cell A1."
+    - "Create a new sheet called 'model_smoke' and write 'smoke test passed' in cell A1."
+    - "Create a new sheet called 'answers_smoke' and write 'done' in cell A1."
+
+  retry:
+    max_agent_attempts: 1
+    max_pipeline_attempts: 2
+    timeout_per_task_seconds: 600
+
+  claude_excel_agent:
+    skip_file_upload: true
+    model: null
+    max_sec_per_task: 600
+    max_agent_attempts: 1
+    max_total_attempts: 2
+
+    browser:
+      type: "chrome"
+      headless: false
+      timeout: 10000
+
+    check_interval_seconds: 15
+    max_wait_per_prompt_seconds: 120
+
+    logging:
+      level: "DEBUG"
+      save_to_file: true
+      log_directory: "claude_logs"
+
+    runtime:
+      no_hold: true
+      kill_all_browsers: false

@@ -206,6 +206,88 @@ class AIAgentCore(ABC):
             logger.error(f"❌ Error installing {self.get_addon_name()} plugin: {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # JS snippet: find and click an add-in tile inside the Fluent UI
+    # ms-Layer popup (the "My Add-ins" dropdown).
+    #
+    # The add-in tiles are generic <DIV>s with no aria-label, title, or
+    # role.  The display name may be longer than get_addon_name() — e.g.
+    # "Claude by Anthropic for Excel" vs "Claude by Anthropic".
+    #
+    # Algorithm:
+    #   1. Collect every element inside a .ms-Layer-content container
+    #      whose textContent includes the addon name (substring match).
+    #   2. Pick the element with the shortest textContent (= narrowest /
+    #      most specific match — the tile, not a parent container).
+    #   3. Click it.
+    # ------------------------------------------------------------------
+    _JS_CLICK_ADDON_IN_LAYER = """
+    (addonName) => {
+        const lower = addonName.toLowerCase();
+        const layers = document.querySelectorAll(
+            '.ms-Layer-content, [class*="Layer-content"]'
+        );
+        let bestEl = null;
+        let bestLen = Infinity;
+        for (const layer of layers) {
+            const walker = document.createTreeWalker(
+                layer, NodeFilter.SHOW_ELEMENT
+            );
+            while (walker.nextNode()) {
+                const el = walker.currentNode;
+                const text = (el.textContent || '').trim().toLowerCase();
+                if (text.includes(lower) && text.length < bestLen) {
+                    bestEl = el;
+                    bestLen = text.length;
+                }
+            }
+        }
+        if (bestEl) {
+            bestEl.click();
+            return bestLen;
+        }
+        return -1;
+    }
+    """
+
+    async def _click_addon_in_layer(self, addon_name: str) -> bool:
+        """Click an add-in tile in the My Add-ins Fluent UI popup.
+
+        Uses JS evaluate to find the narrowest element inside a
+        ms-Layer-content container whose text contains ``addon_name``,
+        then clicks it.  Retries up to 5 times with 2 s between attempts
+        to allow the popup to render.
+
+        Returns True if clicked, False otherwise.
+        """
+        excel_frame = next(
+            (f for f in self.page.frames if f.name == "WacFrame_Excel_0"),
+            None,
+        )
+        targets = [excel_frame] if excel_frame else self.page.frames
+
+        for attempt in range(5):
+            for frame in targets:
+                try:
+                    result = await asyncio.wait_for(
+                        frame.evaluate(self._JS_CLICK_ADDON_IN_LAYER, addon_name),
+                        timeout=3,
+                    )
+                    if isinstance(result, (int, float)) and result >= 0:
+                        logger.info(
+                            f"✅ Clicked '{addon_name}' in ms-Layer"
+                            f" (textLen={result}, frame={frame.name or '?'})"
+                        )
+                        return True
+                except (Exception, asyncio.TimeoutError):
+                    continue
+            if attempt < 4:
+                logger.debug(f"⏳ Add-in not found in layer, retry {attempt + 1}/5...")
+                await asyncio.sleep(2.0)
+
+        logger.error(f"❌ Could not find '{addon_name}' in ms-Layer popup")
+        return False
+
     async def find_and_click(self, max_seconds: int = 15) -> bool:
         """
         Find and click AI agent, then open button, then verify panel opened.
@@ -329,24 +411,22 @@ class AIAgentCore(ABC):
         step2_end = asyncio.get_event_loop().time() + max_seconds
 
         if self.requires_addins_menu():
-            # Click addon name in add-ins list.
-            # IMPORTANT: Use exact-match selectors (text="quoted", :text-is())
-            # NOT substring selectors (text=unquoted, :has-text()).
-            # Substring selectors like text=ChatGPT will match the renamed
-            # workbook filename (e.g. "…_chatgpt_excel_agent_Model.xlsx")
-            # instead of the actual add-in button.
             logger.info(f"🔍 Step 2: Looking for '{addon_name}' in add-ins list...")
             await asyncio.sleep(3.0)
-            step2_selectors = [
-                f'text="{addon_name}"',
-                f'button:text-is("{addon_name}")',
-                f'[aria-label="{addon_name}"]',
-                f'[title="{addon_name}"]',
-                f'div:text-is("{addon_name}")',
-            ]
+
+            # The My Add-ins popup is a Fluent UI Layer inside WacFrame_Excel_0.
+            # Add-in tiles are generic DIVs with no aria-label/title/role, and
+            # the display name may differ from get_addon_name() (e.g. the DOM
+            # text is "Claude by Anthropic for Excel", not "Claude by Anthropic").
+            # Playwright exact-match selectors fail in this scenario.
+            #
+            # Strategy: use JS evaluate in the Excel frame to find the narrowest
+            # element inside the ms-Layer popup whose text contains the addon
+            # name, then click it. This is safe from filename collisions because
+            # the ms-Layer popup is separate from the spreadsheet area.
+            open_clicked = await self._click_addon_in_layer(addon_name)
         else:
-            # TabAI: Click "Open TabAI" button
-            # Same exact-match discipline to avoid filename collisions.
+            # Non-addins-menu path (e.g. TabAI "Open" button)
             logger.info(f"🔍 Step 2: Looking for '{open_button_text}' button...")
             await asyncio.sleep(3.0)
             step2_selectors = [
@@ -356,80 +436,78 @@ class AIAgentCore(ABC):
                 f'[title="{open_button_text}"]',
             ]
 
-        open_clicked = False
-        remaining_time = step2_end - asyncio.get_event_loop().time()
+            open_clicked = False
+            remaining_time = step2_end - asyncio.get_event_loop().time()
 
-        for _ in range(int(max(remaining_time, 1) * 1.5)):
-            if asyncio.get_event_loop().time() >= step2_end:
-                break
-            for selector in step2_selectors:
+            for _ in range(int(max(remaining_time, 1) * 1.5)):
                 if asyncio.get_event_loop().time() >= step2_end:
                     break
-                try:
-                    # Try in main page (with per-call timeout)
-                    element = await asyncio.wait_for(
-                        self.page.query_selector(selector),
-                        timeout=PER_CALL_TIMEOUT,
-                    )
-                    if element and await asyncio.wait_for(
-                        element.is_visible(), timeout=PER_CALL_TIMEOUT
-                    ):
-                        try:
-                            await asyncio.wait_for(
-                                element.scroll_into_view_if_needed(),
-                                timeout=PER_CALL_TIMEOUT,
-                            )
-                            await asyncio.sleep(0.3)
-                        except Exception:
-                            pass
-                        await asyncio.wait_for(
-                            element.click(), timeout=PER_CALL_TIMEOUT
+                for selector in step2_selectors:
+                    if asyncio.get_event_loop().time() >= step2_end:
+                        break
+                    try:
+                        element = await asyncio.wait_for(
+                            self.page.query_selector(selector),
+                            timeout=PER_CALL_TIMEOUT,
                         )
-                        logger.info(f"✅ Clicked: {selector}")
-                        open_clicked = True
-                        break
-
-                    # Try in frames
-                    for frame in self.page.frames:
-                        if asyncio.get_event_loop().time() >= step2_end:
-                            break
-                        try:
-                            element = await asyncio.wait_for(
-                                frame.query_selector(selector),
-                                timeout=PER_CALL_TIMEOUT,
-                            )
-                            if element and await asyncio.wait_for(
-                                element.is_visible(), timeout=PER_CALL_TIMEOUT
-                            ):
-                                try:
-                                    await asyncio.wait_for(
-                                        element.scroll_into_view_if_needed(),
-                                        timeout=PER_CALL_TIMEOUT,
-                                    )
-                                    await asyncio.sleep(0.3)
-                                except Exception:
-                                    pass
+                        if element and await asyncio.wait_for(
+                            element.is_visible(), timeout=PER_CALL_TIMEOUT
+                        ):
+                            try:
                                 await asyncio.wait_for(
-                                    element.click(), timeout=PER_CALL_TIMEOUT
+                                    element.scroll_into_view_if_needed(),
+                                    timeout=PER_CALL_TIMEOUT,
                                 )
-                                logger.info(f"✅ Clicked in frame: {selector}")
-                                open_clicked = True
+                                await asyncio.sleep(0.3)
+                            except Exception:
+                                pass
+                            await asyncio.wait_for(
+                                element.click(), timeout=PER_CALL_TIMEOUT
+                            )
+                            logger.info(f"✅ Clicked: {selector}")
+                            open_clicked = True
+                            break
+
+                        for frame in self.page.frames:
+                            if asyncio.get_event_loop().time() >= step2_end:
                                 break
-                        except (Exception, asyncio.TimeoutError):
-                            continue
+                            try:
+                                element = await asyncio.wait_for(
+                                    frame.query_selector(selector),
+                                    timeout=PER_CALL_TIMEOUT,
+                                )
+                                if element and await asyncio.wait_for(
+                                    element.is_visible(), timeout=PER_CALL_TIMEOUT
+                                ):
+                                    try:
+                                        await asyncio.wait_for(
+                                            element.scroll_into_view_if_needed(),
+                                            timeout=PER_CALL_TIMEOUT,
+                                        )
+                                        await asyncio.sleep(0.3)
+                                    except Exception:
+                                        pass
+                                    await asyncio.wait_for(
+                                        element.click(), timeout=PER_CALL_TIMEOUT
+                                    )
+                                    logger.info(f"✅ Clicked in frame: {selector}")
+                                    open_clicked = True
+                                    break
+                            except (Exception, asyncio.TimeoutError):
+                                continue
 
-                    if open_clicked:
-                        break
-                except asyncio.TimeoutError:
-                    logger.debug(f"⏱️ query_selector timed out for: {selector}")
-                    continue
-                except Exception:
-                    continue
+                        if open_clicked:
+                            break
+                    except asyncio.TimeoutError:
+                        logger.debug(f"⏱️ query_selector timed out for: {selector}")
+                        continue
+                    except Exception:
+                        continue
 
-            if open_clicked:
-                break
+                if open_clicked:
+                    break
 
-            await asyncio.sleep(1.5)
+                await asyncio.sleep(1.5)
 
         if not open_clicked:
             logger.error(
