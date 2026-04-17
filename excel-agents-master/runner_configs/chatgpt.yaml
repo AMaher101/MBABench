@@ -1,5 +1,7 @@
 # Runner config for ChatGPT Excel add-in agent
-# Don't edit this unless you know what you're doing
+# Most fields here rarely need to change. The two you may want to edit are
+# `template:` (point to a different template YAML to swap agents/prompts)
+# and `env_vars:` (forward extra env vars to the engine subprocess).
 
 # Template file to use (determines agent type and all settings)
 template: "templates/chatgpt.yaml"

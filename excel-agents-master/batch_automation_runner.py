@@ -866,16 +866,36 @@ def main():
     template_filename = runner_config.get("template")
 
     if template_filename:
-        # Template specified in runner config
+        # Resolve the template path. We try several candidates so that the
+        # same runner-config value works regardless of where the user puts
+        # their tasks file (directly under tasks_configs/, in examples/,
+        # somewhere outside the repo, etc.).
+        template_path = Path(template_filename)
         tasks_dir = args.tasks.parent
-        template_file = tasks_dir / template_filename
+        repo_root = Path(__file__).resolve().parent
 
-        if not template_file.exists():
-            logger.error(f"❌ Template file not found: {template_file}")
+        if template_path.is_absolute():
+            candidates = [template_path]
+        else:
+            candidates = [
+                tasks_dir / template_path,  # alongside tasks file
+                tasks_dir.parent / template_path,  # one level up (handles examples/)
+                repo_root / "tasks_configs" / template_path,  # canonical location
+                repo_root / template_path,  # repo-root relative
+                Path.cwd() / template_path,  # CWD-relative
+            ]
+
+        template_file = next((c for c in candidates if c.exists()), None)
+
+        if template_file is None:
+            logger.error(f"❌ Template file not found: {template_filename}")
             logger.error(f"   Specified in runner config: {template_filename}")
+            logger.error("   Searched the following locations:")
+            for c in candidates:
+                logger.error(f"     - {c}")
             sys.exit(1)
 
-        logger.info(f"📋 Using template: {template_filename}")
+        logger.info(f"📋 Using template: {template_file}")
     else:
         # Fallback: Look for deprecated template files (backward compatibility)
         logger.warning(

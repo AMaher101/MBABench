@@ -119,6 +119,9 @@ template:
 
   claude_excel_agent:
     model: opus_4_6
+    # Optional: skip uploading local files for this run. Useful for tests
+    # or when the prompts themselves create all needed content.
+    # skip_file_upload: false
     # ... browser, logging, runtime settings
 ```
 
@@ -329,6 +332,13 @@ Each task produces:
 | `ONEDRIVE_PASSWORD` | Yes | OneDrive login password |
 | `TABAI_EMAIL` | No | TabAI-specific email (falls back to ONEDRIVE_EMAIL) |
 | `TABAI_PASSWORD` | No | TabAI-specific password |
+
+## Smoke Tests
+
+`tests/smoke_tests/` contains short end-to-end checks that drive each agent
+through a trivial real run. They require a small amount of OneDrive setup
+before they can run — see [`tests/smoke_tests/README.md`](tests/smoke_tests/README.md)
+for the exact folder layout and step-by-step instructions.
 
 ## Troubleshooting
 

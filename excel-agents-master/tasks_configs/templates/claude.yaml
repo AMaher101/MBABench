@@ -20,9 +20,12 @@ template:
   # ──────────────────────────────────────────────────────────────
   # If your tasks YAML uses `task_source` instead of `onedrive_path`,
   # the runner builds the path as: file_path + task_source + task_name + "Task"
+  # Replace each segment below with your own OneDrive folder names — these
+  # are the folders you'd click through in the OneDrive UI to reach your
+  # tasks. (Tasks that use `onedrive_path` or `direct_url` ignore this.)
   file_path:
     - "My files"
-    - "YOUR_PROJECT_ID"
+    - "YOUR_PARENT_FOLDER"   # e.g. the project / dataset name in your OneDrive
     - "main_tasks"
 
   # Prompt version (recorded in JSON completion logs for tracking)

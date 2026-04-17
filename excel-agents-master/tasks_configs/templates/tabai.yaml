@@ -14,9 +14,11 @@ template:
 
   # OneDrive base path — only used by the task-source shorthand format
   # (path becomes: file_path + task_source + task_name + "Task")
+  # Replace each segment with your own OneDrive folder names. Tasks that
+  # use `onedrive_path` or `direct_url` ignore this entirely.
   file_path:
     - "My files"
-    - "YOUR_PROJECT_ID"
+    - "YOUR_PARENT_FOLDER"   # e.g. the project / dataset name in your OneDrive
     - "main_tasks"
 
   # Prompt version (recorded in JSON completion logs for tracking)
