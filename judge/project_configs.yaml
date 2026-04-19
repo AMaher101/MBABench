@@ -36,6 +36,10 @@ judge:
   float_rounding: 6
   percentage_rounding: 8
 
+  # Excel extract mode
+  fast_cell_extraction: true
+
+
   # Openrouter model to use for judging
   openrouter_model: "google/gemini-2.5-flash-lite"
   # openrouter_model: "google/gemini-2.5-pro"

@@ -30,14 +30,22 @@ def get_worksheet_info(workbook: openpyxl.Workbook, sheet_name: str) -> Dict[str
 
 def load_workbooks(excel_file_path: str) -> Tuple[openpyxl.Workbook, openpyxl.Workbook]:
     """Load both formula and data-only workbooks."""
+
+    # read_only does not keep merged cell, so we can't use the flag for workbook
     workbook = openpyxl.load_workbook(excel_file_path, data_only=False)
-    workbook_data_only = openpyxl.load_workbook(excel_file_path, data_only=True)
+    workbook_data_only = openpyxl.load_workbook(
+        excel_file_path, data_only=True, read_only=True
+    )
     return workbook, workbook_data_only
 
 
 ### Cell processing functions - start
-def _get_formatted_value(cell, cell_data_only) -> str:
-    """Get the formatted display value of a cell, preserving number formatting."""
+def _get_formatted_value(cell, cell_data_only, _cached_config=None) -> str:
+    """Get the formatted display value of a cell, preserving number formatting.
+
+    _cached_config: optional (do_rounding, float_rounding, percentage_rounding) tuple
+    to skip per-cell env/YAML reads when the caller has already loaded them.
+    """
 
     def _default_value(raw_value, float_rounding: int, do_rounding: bool) -> str:
         if isinstance(raw_value, float):
@@ -53,10 +61,13 @@ def _get_formatted_value(cell, cell_data_only) -> str:
     if cell_data_only.value is None:
         return ""
     # Obtain parameters
-    do_rounding = load_env_var("JUDGE_DO_ROUNDING", "true").lower() == "true"
-    if do_rounding:
-        float_rounding = int(load_env_var("JUDGE_FLOAT_ROUNDING", 6))
-        percentage_rounding = int(load_env_var("JUDGE_PERCENTAGE_ROUNDING", 8))
+    if _cached_config is not None:
+        do_rounding, float_rounding, percentage_rounding = _cached_config
+    else:
+        do_rounding = load_env_var("JUDGE_DO_ROUNDING", "true").lower() == "true"
+        if do_rounding:
+            float_rounding = int(load_env_var("JUDGE_FLOAT_ROUNDING", 6))
+            percentage_rounding = int(load_env_var("JUDGE_PERCENTAGE_ROUNDING", 8))
 
     # Get the raw value
     raw_value = cell_data_only.value
@@ -456,10 +467,11 @@ def create_enhanced_cell(
     cell_data_only,
     row_idx: int,
     col_idx: int,
+    _cached_config=None,
 ) -> str:
     """Create enhanced cell data with embedded formula and formatting."""
     # Start with formatted display value (includes number formatting)
-    display_value = _get_formatted_value(cell, cell_data_only)
+    display_value = _get_formatted_value(cell, cell_data_only, _cached_config)
 
     # For non-empty cells, start with cell reference
     if display_value.strip():
@@ -490,21 +502,56 @@ def list_to_csv(data: List[List[str]]) -> str:
 
 
 def extract_all_cell_data(worksheet, worksheet_data) -> Dict[str, Any]:
-    """Extract everything into one CSV."""
+    """Extract everything into one CSV.
+
+    JUDGE_FAST_CELL_EXTRACT (default "true") selects between:
+      - fast: parallel iter_rows() on both sheets + one-time env var load
+      - slow: original per-cell worksheet_data.cell() lookup (kept for parity)
+    """
+    use_fast = load_env_var("JUDGE_FAST_CELL_EXTRACT", "true").lower() == "true"
+
     enhanced_data = []
 
-    for row_idx, row in enumerate(worksheet.iter_rows(), 1):
-        enhanced_row = []
-        for col_idx, cell in enumerate(row, 1):
-            cell_data_only = worksheet_data.cell(row_idx, col_idx)
-            enhanced_cell = create_enhanced_cell(
-                cell,
-                cell_data_only,
-                row_idx,
-                col_idx,
-            )
-            enhanced_row.append(enhanced_cell)
-        enhanced_data.append(enhanced_row)
+    if use_fast:
+        # In read-only mode, worksheet_data.cell(r, c) re-scans the XML from the
+        # start on each call, and _get_formatted_value reloads project_configs.yaml
+        # per cell. Walk both sheets in lockstep and load env vars once.
+        do_rounding = load_env_var("JUDGE_DO_ROUNDING", "true").lower() == "true"
+        float_rounding = (
+            int(load_env_var("JUDGE_FLOAT_ROUNDING", 6)) if do_rounding else 6
+        )
+        percentage_rounding = (
+            int(load_env_var("JUDGE_PERCENTAGE_ROUNDING", 8)) if do_rounding else 8
+        )
+        cached_config = (do_rounding, float_rounding, percentage_rounding)
+
+        for row_idx, (row, row_data) in enumerate(
+            zip(worksheet.iter_rows(), worksheet_data.iter_rows()), 1
+        ):
+            enhanced_row = []
+            for col_idx, (cell, cell_data_only) in enumerate(zip(row, row_data), 1):
+                enhanced_cell = create_enhanced_cell(
+                    cell,
+                    cell_data_only,
+                    row_idx,
+                    col_idx,
+                    _cached_config=cached_config,
+                )
+                enhanced_row.append(enhanced_cell)
+            enhanced_data.append(enhanced_row)
+    else:
+        for row_idx, row in enumerate(worksheet.iter_rows(), 1):
+            enhanced_row = []
+            for col_idx, cell in enumerate(row, 1):
+                cell_data_only = worksheet_data.cell(row_idx, col_idx)
+                enhanced_cell = create_enhanced_cell(
+                    cell,
+                    cell_data_only,
+                    row_idx,
+                    col_idx,
+                )
+                enhanced_row.append(enhanced_cell)
+            enhanced_data.append(enhanced_row)
 
     return {
         "full": list_to_csv(enhanced_data),
