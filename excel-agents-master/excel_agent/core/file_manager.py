@@ -12,6 +12,7 @@ Supports two modes:
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -133,16 +134,23 @@ class FileManager:
                 "desktop.ini",  # Windows folder settings
             ]
 
-            for file_path in task_path.iterdir():
-                if file_path.is_file():
-                    file_name = file_path.name
+            # Use os.scandir instead of pathlib.iterdir: DirEntry caches
+            # is_file()/is_dir() from the directory enumeration, which works
+            # for long paths on Windows. pathlib's iterdir + Path.is_file
+            # does a separate stat() call that silently returns False near
+            # MAX_PATH (260 chars), causing files to be invisibly skipped.
+            with os.scandir(task_path) as entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    file_name = entry.name
                     # Skip macOS system files and hidden files starting with .
                     if file_name.startswith(".") or file_name in ignored_patterns:
                         continue
                     # Skip macOS resource fork files (._filename)
                     if file_name.startswith("._"):
                         continue
-                    all_files.append(str(file_path.absolute()))
+                    all_files.append(os.path.abspath(entry.path))
 
             logger.info(f"📁 Found {len(all_files)} local files:")
             for file_path in all_files:
