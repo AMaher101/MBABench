@@ -46,6 +46,7 @@ _spec = importlib.util.spec_from_file_location(
 _judge_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_judge_mod)
 judge_case = _judge_mod.judge_case
+agentic_judge_case = _judge_mod.agentic_judge_case
 
 
 # ---------------------------------------------------------------------------
@@ -277,9 +278,10 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
         Path to the created task folder, or None on failure.
     """
     attempt_id = attempt["attempt_id"]
-    task_name = attempt["task_name"] or f"task_{attempt['task_id']}"
+    task_id = attempt["task_id"]
+    task_name = attempt["task_name"] or f"task_{task_id}"
 
-    task_folder = scratch_run_dir / f"{task_name}__attempt_{attempt_id}"
+    task_folder = scratch_run_dir / f"{task_name}__task_{task_id}__attempt_{attempt_id}"
     task_folder.mkdir(parents=True, exist_ok=True)
 
     # --- ai_attempt.xlsx from task_attempts.attempt_files ---
@@ -360,7 +362,11 @@ def grade_single_attempt(
     attempt_char_limit=None,
     total_char_limit=None,
     cached_solution_csv_dir=None,
-    attempt_sheet_name_filter=True,
+    cached_attempt_csv_dir=None,
+    attempt_sheet_name_filter=False,
+    agentic=False,
+    carry_over_context=True,
+    max_tool_rounds=20,
 ):
     """Grade a single attempt. Returns a result dict."""
     attempt_id = attempt["attempt_id"]
@@ -404,30 +410,51 @@ def grade_single_attempt(
         )
     )
     try:
-        # Step 2: Run judge_case
-        logger.info("[Judge] Running judge_case...")
-        judge_kwargs = dict(
-            task_folder=str(task_folder),
-            client=client,
-            rubric_path=rubric_path,
-            template_path=template_path,
-            rubric_weight_path=rubric_weight_path,
-            model=model,
-            nocall=nocall,
-            noupload=noupload,
-            run_calculation=run_calculation,
-            attempt_model=attempt["agent_model_name"],
-            cached_solution_csv_dir=cached_solution_csv_dir,
-            attempt_sheet_name_filter=attempt_sheet_name_filter,
-        )
-        if solution_char_limit is not None:
-            judge_kwargs["solution_context_char_limit"] = solution_char_limit
-        if attempt_char_limit is not None:
-            judge_kwargs["attempt_context_char_limit"] = attempt_char_limit
-        if total_char_limit is not None:
-            judge_kwargs["total_character_limit"] = total_char_limit
+        # Step 2: Run judge
+        if agentic:
+            logger.info("[Judge] Running agentic_judge_case...")
+            agentic_kwargs = dict(
+                task_folder=str(task_folder),
+                client=client,
+                rubric_path=rubric_path,
+                rubric_weight_path=rubric_weight_path,
+                model=model,
+                nocall=nocall,
+                noupload=noupload,
+                run_calculation=run_calculation,
+                attempt_model=attempt["agent_model_name"],
+                cached_solution_csv_dir=cached_solution_csv_dir,
+                cached_attempt_csv_dir=cached_attempt_csv_dir,
+                attempt_sheet_name_filter=attempt_sheet_name_filter,
+                carry_over_context=carry_over_context,
+                max_tool_rounds=max_tool_rounds,
+            )
+            result = agentic_judge_case(**agentic_kwargs)
+        else:
+            logger.info("[Judge] Running judge_case...")
+            judge_kwargs = dict(
+                task_folder=str(task_folder),
+                client=client,
+                rubric_path=rubric_path,
+                template_path=template_path,
+                rubric_weight_path=rubric_weight_path,
+                model=model,
+                nocall=nocall,
+                noupload=noupload,
+                run_calculation=run_calculation,
+                attempt_model=attempt["agent_model_name"],
+                cached_solution_csv_dir=cached_solution_csv_dir,
+                cached_attempt_csv_dir=cached_attempt_csv_dir,
+                attempt_sheet_name_filter=attempt_sheet_name_filter,
+            )
+            if solution_char_limit is not None:
+                judge_kwargs["solution_context_char_limit"] = solution_char_limit
+            if attempt_char_limit is not None:
+                judge_kwargs["attempt_context_char_limit"] = attempt_char_limit
+            if total_char_limit is not None:
+                judge_kwargs["total_character_limit"] = total_char_limit
 
-        result = judge_case(**judge_kwargs)
+            result = judge_case(**judge_kwargs)
 
         if result is None:
             # nocall / noupload mode — nothing to record
@@ -512,6 +539,7 @@ def grade_single_attempt(
             "raw_files": raw_files_list,
             "parse_failures": result.get("parse_failures"),
             "solution_csv_dir": result.get("solution_csv_dir"),
+            "attempt_csv_dir": result.get("attempt_csv_dir"),
         }
 
     except Exception as e:
@@ -531,11 +559,15 @@ def grade_single_attempt(
         remove_log_file(log_path)
 
 
-def write_grading_to_db(conn, attempt, result, model):
+def write_grading_to_db(conn, attempt, result, model, agentic=False):
     """Persist a grading result to the gradings table."""
-    PROMPT_VERSION = load_env_var("JUDGE_PROMPT_VERSION", required=True)
+    if agentic:
+        PROMPT_VERSION = load_env_var("AGENTIC_JUDGE_PROMPT_VERSION", required=True)
+        JUDGE_VERSION = load_env_var("AGENTIC_JUDGE_VERSION", required=True)
+    else:
+        PROMPT_VERSION = load_env_var("JUDGE_PROMPT_VERSION", required=True)
+        JUDGE_VERSION = load_env_var("JUDGE_VERSION", required=True)
     RUBRIC_VERSION = load_env_var("JUDGE_RUBRIC_VERSION", required=True)
-    JUDGE_VERSION = load_env_var("JUDGE_VERSION", required=True)
 
     # Enforce grade's existence
     if not result.get("scores"):
@@ -676,13 +708,21 @@ def main(args):
         )
 
         # Grade each attempt
-        # Persistent cache for solution CSVs — avoids re-extracting across runs
+        # Persistent caches for extracted CSVs — avoids re-extracting across runs
         solution_cache_base = Path(scratch_base) / "grade_cache" / "solution_csv_cache"
         solution_cache_base.mkdir(parents=True, exist_ok=True)
+        attempt_cache_base = Path(scratch_base) / "grade_cache" / "attempt_csv_cache"
+        attempt_cache_base.mkdir(parents=True, exist_ok=True)
+        attempt_filter = args.attempt_sheet_name_filter
+        # Namespace attempt cache by filter state — filtered extractions are a
+        # strict subset/rename of unfiltered ones, so they must not share a path.
+        attempt_cache_suffix = "__sheet_filtered" if attempt_filter else ""
         solution_csv_cache = {}  # task_id -> cached dir path (in-memory index)
+        attempt_csv_cache = {}  # attempt_id -> cached dir path (in-memory index)
         results = []
         for i, attempt in enumerate(attempts):
             task_id = attempt["task_id"]
+            attempt_id = attempt["attempt_id"]
 
             # Check in-memory index first, then persistent cache on disk
             cached_dir = solution_csv_cache.get(task_id)
@@ -696,38 +736,64 @@ def main(args):
                         f"{task_cache_dir}"
                     )
 
+            cached_attempt_dir = attempt_csv_cache.get(attempt_id)
+            if not cached_attempt_dir:
+                attempt_cache_dir = (
+                    attempt_cache_base / f"attempt_id={attempt_id}{attempt_cache_suffix}"
+                )
+                if attempt_cache_dir.exists() and list(attempt_cache_dir.glob("*.csv")):
+                    cached_attempt_dir = str(attempt_cache_dir)
+                    attempt_csv_cache[attempt_id] = cached_attempt_dir
+                    logger.info(
+                        f"  Found persistent attempt CSV cache for attempt "
+                        f"{attempt_id}: {attempt_cache_dir}"
+                    )
+
+            cache_notes = []
             if cached_dir:
+                cache_notes.append(f"cached solution CSVs for task {task_id}")
+            if cached_attempt_dir:
+                cache_notes.append(f"cached attempt CSVs for attempt {attempt_id}")
+            if cache_notes:
                 logger.info(
                     f"\n[{i + 1}/{len(attempts)}] "
-                    f"Processing attempt {attempt['attempt_id']}... "
-                    f"(using cached solution CSVs for task {task_id})"
+                    f"Processing attempt {attempt_id}... "
+                    f"(using {'; '.join(cache_notes)})"
                 )
             else:
                 logger.info(
                     f"\n[{i + 1}/{len(attempts)}] "
-                    f"Processing attempt {attempt['attempt_id']}..."
+                    f"Processing attempt {attempt_id}..."
                 )
 
             # Warn if sheet name filtering is on for human attempts
-            attempt_filter = args.attempt_sheet_name_filter
-            if attempt_filter and attempt.get("agent_model_type", "").lower() == "human":
+            if (
+                attempt_filter
+                and attempt.get("agent_model_type", "").lower() == "human"
+            ):
                 logger.warning(
                     f"  WARNING: attempt_sheet_name_filter is enabled but attempt "
                     f"{attempt['attempt_id']} has agent_model_type='human'. "
                     f"Sheet name filtering may not be appropriate for human attempts."
                 )
                 try:
-                    response = input("  Continue grading this attempt? [y/N]: ").strip().lower()
+                    response = (
+                        input("  Continue grading this attempt? [y/N]: ")
+                        .strip()
+                        .lower()
+                    )
                 except EOFError:
                     response = "n"
                 if response != "y":
                     logger.info(f"  Skipping attempt {attempt['attempt_id']}")
-                    results.append({
-                        "attempt_id": attempt["attempt_id"],
-                        "task_id": attempt["task_id"],
-                        "success": False,
-                        "error": "Skipped — human attempt with sheet name filter enabled",
-                    })
+                    results.append(
+                        {
+                            "attempt_id": attempt["attempt_id"],
+                            "task_id": attempt["task_id"],
+                            "success": False,
+                            "error": "Skipped — human attempt with sheet name filter enabled",
+                        }
+                    )
                     continue
 
             result = grade_single_attempt(
@@ -745,7 +811,11 @@ def main(args):
                 attempt_char_limit=args.attempt_char_limit,
                 total_char_limit=args.total_char_limit,
                 cached_solution_csv_dir=cached_dir,
+                cached_attempt_csv_dir=cached_attempt_dir,
                 attempt_sheet_name_filter=attempt_filter,
+                agentic=args.agentic,
+                carry_over_context=args.carry_over_context,
+                max_tool_rounds=args.max_tool_rounds,
             )
             results.append(result)
 
@@ -765,10 +835,49 @@ def main(args):
                     )
                 solution_csv_cache[task_id] = str(task_cache_dir)
 
+            # Persist attempt CSVs to the cache directory for this attempt
+            if (
+                result["success"]
+                and not result.get("skipped")
+                and result.get("attempt_csv_dir")
+                and attempt_id not in attempt_csv_cache
+            ):
+                attempt_cache_dir = (
+                    attempt_cache_base / f"attempt_id={attempt_id}{attempt_cache_suffix}"
+                )
+                if not attempt_cache_dir.exists():
+                    shutil.copytree(
+                        result["attempt_csv_dir"], str(attempt_cache_dir)
+                    )
+                    logger.info(
+                        f"  Persisted attempt CSVs for attempt {attempt_id}: "
+                        f"{attempt_cache_dir}"
+                    )
+                attempt_csv_cache[attempt_id] = str(attempt_cache_dir)
+
             # Write to DB
             if not args.no_db_write and result["success"] and not result.get("skipped"):
                 try:
-                    grading_id = write_grading_to_db(conn, attempt, result, model)
+                    try:
+                        grading_id = write_grading_to_db(
+                            conn, attempt, result, model, agentic=args.agentic
+                        )
+                    except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                        # Long grading runs can leave the DB connection idle for
+                        # tens of minutes; managed Postgres / NAT middleboxes may
+                        # drop the socket silently. Reconnect once and retry.
+                        logger.warning(
+                            f"  DB connection lost ({e.__class__.__name__}: {e}); "
+                            f"reconnecting and retrying write..."
+                        )
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = get_db_connection()
+                        grading_id = write_grading_to_db(
+                            conn, attempt, result, model, agentic=args.agentic
+                        )
                     result["grading_id"] = grading_id
                     logger.info(f"  Wrote grading to DB: id={grading_id}")
                 except Exception as e:
@@ -928,12 +1037,32 @@ Examples:
     )
 
     parser.add_argument(
-        "--no-attempt-sheet-name-filter",
+        "--attempt-sheet-name-filter",
         dest="attempt_sheet_name_filter",
+        action="store_true",
+        default=False,
+        help="Enable attempt sheet name filtering (disabled by default). "
+        "When enabled, only attempt sheets starting with 'answers_' or 'model_' are kept.",
+    )
+
+    # Agentic mode
+    parser.add_argument(
+        "--agentic",
+        action="store_true",
+        help="Use the agentic judge (multi-turn tool-calling, no context reduction)",
+    )
+    parser.add_argument(
+        "--no-carry-over-context",
+        dest="carry_over_context",
         action="store_false",
         default=True,
-        help="Disable attempt sheet name filtering (enabled by default). "
-        "When enabled, only attempt sheets starting with 'answers_' or 'model_' are kept.",
+        help="(Agentic only) Disable carrying over findings between categories",
+    )
+    parser.add_argument(
+        "--max-tool-rounds",
+        type=int,
+        default=20,
+        help="(Agentic only) Max tool-calling rounds per category (default: 20)",
     )
 
     # Execution modes
