@@ -4,7 +4,7 @@ import logging
 import os
 
 DEFAULT_LOG_FORMAT = (
-    "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
+    "%(asctime)s - %(threadName)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s"
 )
 DEFAULT_LOGGER_NAME = "bizbench_judge"
 DEFAULT_LOG_TO_TERMINAL = True
