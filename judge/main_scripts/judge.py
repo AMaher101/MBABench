@@ -1453,117 +1453,80 @@ def _col_letter_to_index(col_str: str) -> int:
     return result
 
 
-def _build_agentic_system_prompt():
-    """Build the system prompt for the agentic judge."""
+def _render_files_text(file_list, file_metadata=None) -> str:
+    """Render sorted file list with optional format_info metadata as indented text."""
+    lines = []
+    for fname in file_list:
+        lines.append(f"    {fname}")
+        meta = (file_metadata or {}).get(fname)
+        if meta and meta.get("format_info") and fname.endswith("_full.csv"):
+            for line in meta["format_info"].splitlines():
+                lines.append(f"      {line}")
+    return "\n".join(lines)
+
+
+def _render_prior_findings_block(prior_findings) -> str | None:
+    if not prior_findings:
+        return None
+    return f"Findings from prior categories (for reference):\n{prior_findings}\n\n"
+
+
+def _render_prior_response_example_block(example) -> str | None:
+    if not example:
+        return None
     return (
-        "You are an expert financial model judge. Your task is to evaluate an "
-        "AI-generated Excel workbook (the 'attempt') against a golden solution "
-        "workbook, using a specific rubric.\n\n"
-        "You have access to CSV representations and formatting metadata for both "
-        "the attempt and solution workbooks. Each sheet's dimensions and "
-        "additional formatting info (merged cells, frozen panes) are provided "
-        "in the prompt so you can plan which ranges to inspect.\n\n"
-        "Use the read_file tool to read specific row/column ranges from CSV "
-        "files. You must specify the range (start_row, end_row, start_col, "
-        "end_col) for each call. Columns use Excel letters (A, B, C, ...). "
-        "Use the file dimensions in the prompt to choose appropriate ranges.\n\n"
-        "Guidelines:\n"
-        "- Thoroughly compare the attempt against the solution for each rubric check\n"
-        "- Use read_file to examine relevant sheet ranges before making judgments\n"
-        "- Be specific about mistakes found, referencing cell locations when possible\n"
-        "- Each mistake should include a location, description, and severity\n"
-        "- When you have gathered enough information, provide your final judgment "
-        "as a JSON object (do NOT call any tools in your final response)\n"
+        "Here is an example of a correctly formatted JSON response from "
+        "a prior category evaluation. Your response MUST follow this "
+        "exact structure (with the current category name as the key):\n"
+        f"{example}\n\n"
     )
 
 
-def _build_category_prompt(
-    category,
-    rubric_checks_text,
-    attempt_file_list,
-    solution_file_list,
-    context_text=None,
-    prior_findings=None,
-    attempt_file_metadata=None,
-    solution_file_metadata=None,
-    prior_response_example=None,
-):
-    """Build the user prompt for evaluating a single category.
+def _build_agentic_context_messages(context_file_path) -> list[dict]:
+    """Build context messages for the agentic judge, supporting .txt and PDFs.
 
-    Args:
-        attempt_file_metadata: dict mapping CSV filenames to
-            {"format_info": str|None}. format_info is the content of the
-            corresponding additional_format.txt (contains dimensions, merged
-            cells, frozen panes).
-        solution_file_metadata: Same structure for solution files.
-        prior_response_example: A raw JSON response string from a prior
-            category evaluation, included as an example of the expected
-            output format to guide the model.
+    PDFs (and other binary types) are base64-encoded and attached via
+    image_url, mirroring the standard judge's context handling. Returns an
+    empty list if no context file is provided.
     """
-    parts = [f"Evaluate the '{category}' category.\n"]
+    if not context_file_path:
+        return []
 
-    parts.append("Available files:")
-    parts.append("")
-    parts.append("  Attempt sheets:")
-    for fname in attempt_file_list:
-        parts.append(f"    {fname}")
-        meta = (attempt_file_metadata or {}).get(fname)
-        if meta and meta.get("format_info") and fname.endswith("_full.csv"):
-            for line in meta["format_info"].splitlines():
-                parts.append(f"      {line}")
+    context_file_path = Path(context_file_path)
+    ext = context_file_path.suffix.lower()
 
-    parts.append("")
-    parts.append("  Solution sheets:")
-    for fname in solution_file_list:
-        parts.append(f"    {fname}")
-        meta = (solution_file_metadata or {}).get(fname)
-        if meta and meta.get("format_info") and fname.endswith("_full.csv"):
-            for line in meta["format_info"].splitlines():
-                parts.append(f"      {line}")
-    parts.append("")
+    if ext == ".txt":
+        try:
+            with open(context_file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Case context:\n{content}"},
+                    ],
+                }
+            ]
+        except UnicodeDecodeError:
+            logger.warning(f"  Could not read context file: {context_file_path}")
+            # Fall through to base64 encoding below
+            pass
 
-    if context_text:
-        parts.append(f"Case context:\n{context_text}\n")
-
-    if prior_findings:
-        parts.append(
-            "Findings from prior categories (for reference):\n"
-            f"{prior_findings}\n"
-        )
-
-    parts.append(f"Rubric checks for {category}:\n{rubric_checks_text}\n")
-
-    if prior_response_example:
-        parts.append(
-            "Here is an example of a correctly formatted JSON response from "
-            "a prior category evaluation. Your response MUST follow this "
-            "exact structure (with the current category name as the key):\n"
-            f"{prior_response_example}\n"
-        )
-
-    parts.append(
-        "Use the read_file tool to examine relevant files, then provide your "
-        "judgment as a JSON object with this exact format:\n"
-        "{\n"
-        f'  "{category}": [\n'
-        "    {\n"
-        '      "check": "<letter, e.g. A>",\n'
-        '      "decision": "pass" or "fail",\n'
-        '      "summary": "Brief explanation of your assessment",\n'
-        '      "mistakes": [\n'
-        "        {\n"
-        '          "location": "cell/sheet reference",\n'
-        '          "description": "what is wrong",\n'
-        '          "severity": "minor" or "major"\n'
-        "        }\n"
-        "      ]\n"
-        "    }\n"
-        "    ... one entry per check letter ...\n"
-        "  ]\n"
-        "}\n"
-    )
-
-    return "\n".join(parts)
+    base64_content, mime_type = encode_file_to_base64(context_file_path)
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Case context ({context_file_path.name}):"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_content}"
+                    },
+                },
+            ],
+        }
+    ]
 
 
 def _measure_message_chars(msg) -> int:
@@ -1720,6 +1683,7 @@ def agentic_judge_case(
     task_folder: str,
     client: OpenAI,
     rubric_path: str,
+    template_path: str,
     rubric_weight_path: str = None,
     model: str = JUDGE_MODEL,
     nocall: bool = False,
@@ -1823,24 +1787,10 @@ def agentic_judge_case(
     attempt_file_metadata = _build_file_metadata(ai_attempt_dir)
     solution_file_metadata = _build_file_metadata(golden_solution_dir)
 
-    # Read context file if available
-    context_text = None
+    # Build context messages (.txt → inline text; .pdf / other → base64 image_url)
+    context_messages = _build_agentic_context_messages(context_file_path)
     if context_file_path:
-        ext = context_file_path.suffix.lower()
-        if ext == ".txt":
-            try:
-                with open(context_file_path, "r", encoding="utf-8") as f:
-                    context_text = f.read()
-            except UnicodeDecodeError:
-                logger.warning(
-                    f"  Could not read context file: {context_file_path}"
-                )
-        elif ext == ".pdf":
-            logger.info(f"  Context PDF detected: {context_file_path.name}")
-            context_text = (
-                f"[Context provided as PDF: {context_file_path.name} "
-                f"— not available as text]"
-            )
+        logger.info(f"  Context file: {context_file_path.name}")
 
     # Build check name mapping
     check_name_mapping = build_check_name_mapping(str(rubric_json_path))
@@ -1854,7 +1804,6 @@ def agentic_judge_case(
     # Agentic evaluation loop
     logger.info("\n[Agentic] Starting multi-turn evaluation...")
 
-    system_prompt = _build_agentic_system_prompt()
     all_responses = {}
     parse_failures = {}
     prior_findings_text = None
@@ -1875,22 +1824,24 @@ def agentic_judge_case(
 
         rubric_checks_text = render_rubric_checks(str(rubric_json_path), category)
 
-        user_prompt = _build_category_prompt(
+        compile_kwargs = dict(
             category=category,
             rubric_checks_text=rubric_checks_text,
-            attempt_file_list=attempt_file_list,
-            solution_file_list=solution_file_list,
-            context_text=context_text,
-            prior_findings=prior_findings_text if carry_over_context else None,
-            attempt_file_metadata=attempt_file_metadata,
-            solution_file_metadata=solution_file_metadata,
-            prior_response_example=first_successful_response,
+            attempt_files_text=_render_files_text(attempt_file_list, attempt_file_metadata),
+            solution_files_text=_render_files_text(solution_file_list, solution_file_metadata),
+            prior_findings=_render_prior_findings_block(
+                prior_findings_text if carry_over_context else None
+            ),
+            prior_response_example=_render_prior_response_example_block(
+                first_successful_response
+            ),
         )
+        if context_messages:
+            compile_kwargs["context_messages"] = context_messages
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        stages = compile_prompt(template_path, **compile_kwargs)
+        # Single-stage template: one list of messages seeds the tool-calling loop.
+        messages = list(stages[0])
 
         cumulative_metrics = {
             "message_size": 0,
@@ -2160,6 +2111,14 @@ def main(args):
             )
         )
     )
+    agentic_template_path = str(
+        relative_path_from_project_root(
+            load_env_var(
+                "AGENTIC_JUDGE_PROMPT_TEMPLATE",
+                default="./prompts/agentic_judge_template_1.yaml",
+            )
+        )
+    )
     rubric_weight_path = str(
         relative_path_from_project_root(
             load_env_var(
@@ -2181,6 +2140,7 @@ def main(args):
             task_folder=args.folder_to_grade,
             client=client,
             rubric_path=rubric_path,
+            template_path=agentic_template_path,
             rubric_weight_path=rubric_weight_path,
             model=args.model,
             nocall=args.nocall,

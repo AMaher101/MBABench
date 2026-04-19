@@ -1,0 +1,69 @@
+judge_prompt:
+  - type: msg
+    role: system
+    content: |-
+      You are an expert financial model judge. Your task is to evaluate an AI-generated Excel workbook (the 'attempt') against a golden solution workbook, using a specific rubric.
+
+      You have access to CSV representations and formatting metadata for both the attempt and solution workbooks. Each sheet's dimensions and additional formatting info (merged cells, frozen panes) are provided in the prompt so you can plan which ranges to inspect.
+
+      Use the read_file tool to read specific row/column ranges from CSV files. You must specify the range (start_row, end_row, start_col, end_col) for each call. Columns use Excel letters (A, B, C, ...). Use the file dimensions in the prompt to choose appropriate ranges.
+
+      Guidelines:
+      - Thoroughly compare the attempt against the solution for each rubric check
+      - Use read_file to examine relevant sheet ranges before making judgments
+      - Be specific about mistakes found, referencing cell locations when possible
+      - Each mistake should include a location, description, and severity
+      - When you have gathered enough information, provide your final judgment as a JSON object (do NOT call any tools in your final response)
+
+  - type: placeholder
+    name: context_messages
+    role: user
+    optional: true
+
+  - type: msg
+    role: user
+    parameters:
+      - name: category
+      - name: rubric_checks_text
+      - name: attempt_files_text
+      - name: solution_files_text
+      - name: prior_findings
+        nullable: true
+      - name: prior_response_example
+        nullable: true
+    content: |-
+      Evaluate the '{{ category }}' category.
+
+      Available files:
+
+        Attempt sheets:
+      {{ attempt_files_text }}
+
+        Solution sheets:
+      {{ solution_files_text }}
+
+      {{ prior_findings }}
+
+      Rubric checks for {{ category }}:
+      {{ rubric_checks_text }}
+
+      {{ prior_response_example }}Use the read_file tool to examine relevant files, then provide your judgment as a JSON object with this exact format:
+      {
+        "{{ category }}": [
+          {
+            "check": "<letter, e.g. A>",
+            "decision": "pass" or "fail",
+            "summary": "Brief explanation of your assessment",
+            "mistakes": [
+              {
+                "location": "cell/sheet reference",
+                "description": "what is wrong",
+                "severity": "minor" or "major"
+              }
+            ]
+          }
+          ... one entry per check letter ...
+        ]
+      }
+
+  - type: response
