@@ -631,6 +631,33 @@ def grade_single_attempt(
                 f"calculation failed. Scores will default to 0."
             )
 
+        # Categories whose judge output could not be parsed after all retries.
+        # judge.py marks these with parse_failures[cat]["success"] = False.
+        parse_failures = result.get("parse_failures") or {}
+        hard_parse_failures = [
+            cat
+            for cat, info in parse_failures.items()
+            if not info.get("success", True)
+        ]
+        if hard_parse_failures:
+            logger.warning(
+                f"  WARNING: judge failed to parse output for categories: "
+                f"{hard_parse_failures}. Affected categories contribute 0 to the "
+                f"score and this grading will be marked failed in the DB."
+            )
+
+        # Silent-scoring hazards detected inside calculate_scores: unscored
+        # checks, empty categories, duplicates, and total_mistakes/len mismatches.
+        # Any non-empty bucket means numeric scores are not fully trustworthy.
+        scoring_warnings = result.get("scoring_warnings") or {}
+        has_scoring_warnings = any(scoring_warnings.get(k) for k in scoring_warnings)
+        if has_scoring_warnings:
+            logger.warning(
+                f"  WARNING: scoring warnings for attempt {attempt_id}: "
+                f"{ {k: v for k, v in scoring_warnings.items() if v} }. "
+                f"This grading will be marked failed in the DB."
+            )
+
         return {
             "attempt_id": attempt_id,
             "task_id": attempt["task_id"],
@@ -650,6 +677,10 @@ def grade_single_attempt(
             "raw_files_path": str(output_dir),
             "raw_files": raw_files_list,
             "parse_failures": result.get("parse_failures"),
+            "hard_parse_failures": hard_parse_failures,
+            "missing_scores": missing_scores,
+            "scoring_warnings": scoring_warnings,
+            "has_scoring_warnings": has_scoring_warnings,
             "solution_csv_dir": result.get("solution_csv_dir"),
             "attempt_csv_dir": result.get("attempt_csv_dir"),
         }
@@ -688,7 +719,43 @@ def write_grading_to_db(conn, attempt, result, model, agentic=False):
         if key not in result["scores"]:
             raise ValueError(f"Result 'scores' missing expected key: {key}")
 
-    is_failed = not result["success"]
+    # A grading is "failed" whenever we can't trust the numeric scores:
+    #   - the judge raised (result["success"] is False)
+    #   - any category's output couldn't be parsed after all retries
+    #   - calculate_scores skipped a category and left it as None
+    #   - calculate_scores flagged a silent-scoring hazard (unscored/empty/
+    #     duplicate/mistake-count-mismatch)
+    hard_parse_failures = result.get("hard_parse_failures") or []
+    missing_scores = result.get("missing_scores") or []
+    scoring_warnings = result.get("scoring_warnings") or {}
+    has_scoring_warnings = bool(result.get("has_scoring_warnings"))
+    is_failed = (
+        not result["success"]
+        or bool(hard_parse_failures)
+        or bool(missing_scores)
+        or has_scoring_warnings
+    )
+    if not result["success"]:
+        failed_reason = result.get("error")
+    elif hard_parse_failures:
+        failed_reason = f"Parse failed for categories: {', '.join(hard_parse_failures)}"
+    elif missing_scores:
+        failed_reason = f"Missing scores: {', '.join(missing_scores)}"
+    elif has_scoring_warnings:
+        warn_keys = [k for k, v in scoring_warnings.items() if v]
+        failed_reason = f"Scoring warnings: {', '.join(warn_keys)}"
+    else:
+        failed_reason = None
+
+    # Combine all error signals into a single structured blob for the
+    # errors_encountered column. Keys are only included when non-empty.
+    errors_blob = {}
+    if result.get("parse_failures"):
+        errors_blob["parse_failures"] = result["parse_failures"]
+    if has_scoring_warnings:
+        errors_blob["scoring_warnings"] = {
+            k: v for k, v in scoring_warnings.items() if v
+        }
 
     data = {
         "task_id": attempt["task_id"],
@@ -707,13 +774,9 @@ def write_grading_to_db(conn, attempt, result, model, agentic=False):
         "cost": round(result.get("cost", 0), 6),
         "raw_files_path": result.get("raw_files_path", ""),
         "raw_files": json.dumps(result.get("raw_files", [])),
-        "errors_encountered": (
-            json.dumps(result["parse_failures"])
-            if result.get("parse_failures")
-            else None
-        ),
+        "errors_encountered": json.dumps(errors_blob) if errors_blob else None,
         "failed": is_failed,
-        "failed_reason": result.get("error") if is_failed else None,
+        "failed_reason": failed_reason,
         "deprecated": False,
         "deprecated_reason": None,
         "solution_context_reduced": result.get("solution_context_reduced", False),
@@ -981,8 +1044,14 @@ def main(args):
                     )
                 attempt_csv_cache[attempt_id] = str(attempt_cache_dir)
 
-            # Write to DB
-            if not args.no_db_write and result["success"] and not result.get("skipped"):
+            # Write to DB. We write whenever we have a usable result with scores,
+            # even if the grading is marked failed (e.g. parse failures) — that
+            # way the failure is visible in the DB instead of being dropped.
+            if (
+                not args.no_db_write
+                and not result.get("skipped")
+                and result.get("scores")
+            ):
                 try:
                     try:
                         grading_id = write_grading_to_db(
@@ -1041,7 +1110,14 @@ def main(args):
         logger.info("=" * 60)
 
         for r in results:
-            status = "OK" if r["success"] else "FAILED"
+            if not r["success"]:
+                status = "FAILED"
+            elif r.get("hard_parse_failures") or r.get("missing_scores"):
+                status = "PARSE_FAILED"
+            elif r.get("has_scoring_warnings"):
+                status = "SCORING_WARN"
+            else:
+                status = "OK"
             parts = [f"  attempt {r['attempt_id']}: [{status}]"]
             if r.get("scores"):
                 s = r["scores"]
@@ -1049,6 +1125,23 @@ def main(args):
                     f"A={s['accuracy_grade']:.2f} "
                     f"F={s['formula_grade']:.2f} "
                     f"Fmt={s['format_grade']:.2f}"
+                )
+            if r.get("hard_parse_failures"):
+                parts.append(f"parse_failed={r['hard_parse_failures']}")
+            if r.get("missing_scores"):
+                parts.append(f"missing_scores={r['missing_scores']}")
+            if r.get("has_scoring_warnings"):
+                sw = r.get("scoring_warnings") or {}
+                counts = {
+                    "unscored": sum(len(v) for v in (sw.get("unscored_checks") or {}).values()),
+                    "empty_cats": len(sw.get("empty_category_judgements") or []),
+                    "dupes": sum(
+                        len(v) for v in (sw.get("duplicate_judgements") or {}).values()
+                    ),
+                    "mismatches": len(sw.get("mistake_count_mismatches") or []),
+                }
+                parts.append(
+                    "scoring_warn=" + " ".join(f"{k}={v}" for k, v in counts.items() if v)
                 )
             if r.get("grading_id"):
                 parts.append(f"grading_id={r['grading_id']}")

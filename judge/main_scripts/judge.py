@@ -183,15 +183,42 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
 
     Matches checks between judgement and weights by the 'name' field.
 
+    Conservative on silent-failure edges:
+      - Checks present in weights but missing from judgement score 0 (and are
+        recorded in scoring_warnings["unscored_checks"]), rather than defaulting
+        to 0 mistakes / full credit.
+      - An empty judgement list for a category is recorded in
+        scoring_warnings["empty_category_judgements"]; combined with the rule
+        above, every weighted check ends up unscored.
+      - Duplicate check names keep the worst (max mistakes) rather than
+        last-write-wins, and the incident is recorded in
+        scoring_warnings["duplicate_judgements"].
+      - Mistake counts are taken from len(mistakes); if the model also
+        reported `total_mistakes` and it disagrees, the mismatch is recorded
+        in scoring_warnings["mistake_count_mismatches"] but the structured
+        list wins.
+
     Args:
         all_responses: Judgement results dict {category: [check_items...]}.
         weights: Weights dict with CategoryWeights and per-category check weights.
         max_mistakes: Maximum mistakes before score is 0 (default 5).
 
     Returns:
-        Dictionary with check_scores, criteria_scores, and total_score (0-100).
+        Dictionary with check_scores, criteria_scores, total_score (0-100),
+        and scoring_warnings.
     """
-    results = {"check_scores": {}, "criteria_scores": {}, "total_score": 0.0}
+    results = {
+        "check_scores": {},
+        "criteria_scores": {},
+        "total_score": 0.0,
+        "scoring_warnings": {
+            "unscored_checks": {},
+            "empty_category_judgements": [],
+            "duplicate_judgements": {},
+            "mistake_count_mismatches": [],
+        },
+    }
+    scoring_warnings = results["scoring_warnings"]
     category_weights = weights["CategoryWeights"][0]
 
     total_score = 0.0
@@ -204,17 +231,42 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
             )
             continue
 
+        if not category_data:
+            scoring_warnings["empty_category_judgements"].append(category)
+
         # Build name -> mistake count from judgement
         judgement_by_name = {}
         for item in category_data:
             name = item.get("name")
-            if name:
-                mistakes = item.get("total_mistakes", len(item.get("mistakes", [])))
-                judgement_by_name[name] = mistakes
-            else:
+            if not name:
                 logger.warning(
                     f"  Skipping item in {category} with missing name: {item}"
                 )
+                continue
+
+            mistakes_list = item.get("mistakes", [])
+            actual_mistakes = (
+                len(mistakes_list) if isinstance(mistakes_list, list) else 0
+            )
+            if "total_mistakes" in item and item["total_mistakes"] != actual_mistakes:
+                scoring_warnings["mistake_count_mismatches"].append(
+                    {
+                        "category": category,
+                        "name": name,
+                        "claimed_total_mistakes": item["total_mistakes"],
+                        "actual_mistakes_len": actual_mistakes,
+                    }
+                )
+            m = actual_mistakes
+
+            if name in judgement_by_name:
+                dupes = scoring_warnings["duplicate_judgements"].setdefault(
+                    category, {}
+                )
+                dupes.setdefault(name, [judgement_by_name[name]]).append(m)
+                judgement_by_name[name] = max(judgement_by_name[name], m)
+            else:
+                judgement_by_name[name] = m
 
         # Calculate scores for each check in weights
         category_check_scores = {}
@@ -225,7 +277,18 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
             check_name = check_weight["name"]
             weight = check_weight["weight"]
 
-            mistakes = judgement_by_name.get(check_name, 0)
+            if check_name in judgement_by_name:
+                mistakes = judgement_by_name[check_name]
+                unscored = False
+            else:
+                # Not evaluated by the judge — conservative penalty instead of
+                # silently crediting as "0 mistakes".
+                mistakes = max_mistakes
+                unscored = True
+                scoring_warnings["unscored_checks"].setdefault(category, []).append(
+                    check_name
+                )
+
             check_score = calculate_check_score(mistakes, max_mistakes)
             weighted_score = check_score * weight
             weighted_sum += weighted_score
@@ -236,6 +299,7 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
                 "score": check_score,
                 "weight": weight,
                 "weighted_score": weighted_score,
+                "unscored": unscored,
             }
 
         category_normalized_score = (
@@ -1324,7 +1388,7 @@ def _finalize_case(
         "context_reduced_details": context_reduced_details,
     }
     if score_results:
-        result["scores"] = score_results
+        result["score_results"] = score_results
         result["accuracy_score"] = (
             score_results["criteria_scores"].get("Accuracy", {}).get("normalized_score")
         )
@@ -1337,6 +1401,37 @@ def _finalize_case(
             .get("normalized_score")
         )
         result["final_score"] = score_results["total_score"]
+
+        scoring_warnings = score_results.get("scoring_warnings") or {}
+        if any(scoring_warnings.get(k) for k in scoring_warnings):
+            result["scoring_warnings"] = scoring_warnings
+            logger.info("\nScoring Warnings Summary:")
+            if scoring_warnings.get("unscored_checks"):
+                logger.info("  Unscored checks (weighted but not evaluated):")
+                for cat, names in scoring_warnings["unscored_checks"].items():
+                    logger.info(f"    {cat}: {names}")
+            if scoring_warnings.get("empty_category_judgements"):
+                logger.info(
+                    f"  Empty category judgements: "
+                    f"{scoring_warnings['empty_category_judgements']}"
+                )
+            if scoring_warnings.get("duplicate_judgements"):
+                logger.info("  Duplicate judgement names (kept max mistakes):")
+                for cat, dupes in scoring_warnings["duplicate_judgements"].items():
+                    for name, ms in dupes.items():
+                        logger.info(f"    {cat}/{name}: reported mistakes={ms}")
+            if scoring_warnings.get("mistake_count_mismatches"):
+                logger.info(
+                    "  total_mistakes vs len(mistakes) mismatches "
+                    "(using len(mistakes)):"
+                )
+                for m in scoring_warnings["mistake_count_mismatches"]:
+                    logger.info(
+                        f"    {m['category']}/{m['name']}: "
+                        f"claimed={m['claimed_total_mistakes']} "
+                        f"actual={m['actual_mistakes_len']}"
+                    )
+
     if parse_failures:
         result["parse_failures"] = parse_failures
         logger.info("\nJSON Parse Failures Summary:")
@@ -2727,9 +2822,7 @@ def agentic_judge_case(
             stats_str = "(none)"
         logger.info(f"    Tool calls: {total_tool_calls} total | {stats_str}")
 
-        tool_calls_path = (
-            conversation_logs_dir / f"tool_calls_{category}.json"
-        )
+        tool_calls_path = conversation_logs_dir / f"tool_calls_{category}.json"
         with open(tool_calls_path, "w", encoding="utf-8") as f:
             json.dump(
                 {"stats": tool_call_stats, "calls": tool_call_args_log},
