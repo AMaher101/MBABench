@@ -2014,8 +2014,18 @@ def _execute_read_file(tool_call, attempt_dir, solution_dir):
         return f"Error: {source} directory not available."
 
     file_path = Path(base_dir) / filename
+    if filename.endswith("_additional_format.txt"):
+        return (
+            f"Error: '{filename}' is not directly readable — its contents are "
+            f"already inlined under the corresponding *_full.csv entry in the "
+            f"file list."
+        )
     if not file_path.exists():
-        available = sorted(f.name for f in Path(base_dir).iterdir() if f.is_file())
+        available = sorted(
+            f.name
+            for f in Path(base_dir).iterdir()
+            if f.is_file() and not f.name.endswith("_additional_format.txt")
+        )
         return (
             f"Error: File '{filename}' not found in {source} directory. "
             f"Available files: {', '.join(available)}"
@@ -2202,8 +2212,14 @@ def agentic_judge_case(
     )
     ai_attempt_files = prepare_directory_files(ai_attempt_dir) if ai_attempt_dir else {}
 
-    attempt_file_list = sorted(ai_attempt_files.keys())
-    solution_file_list = sorted(golden_solution_files.keys())
+    # Exclude *_additional_format.txt — their content is already inlined under
+    # the corresponding *_full.csv entry in the file metadata block.
+    attempt_file_list = sorted(
+        f for f in ai_attempt_files if not f.endswith("_additional_format.txt")
+    )
+    solution_file_list = sorted(
+        f for f in golden_solution_files if not f.endswith("_additional_format.txt")
+    )
 
     logger.info(f"\n  Attempt files: {attempt_file_list}")
     logger.info(f"  Solution files: {solution_file_list}")
