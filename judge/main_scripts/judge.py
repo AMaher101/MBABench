@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import string
 import time
 import traceback
 import uuid
@@ -50,6 +51,15 @@ DEFAULT_TOTAL_CHARACTER_LIMIT = int(
 )
 RUBRIC_MAX_MISTAKES = int(
     load_env_var("JUDGE_RUBRIC_MAX_MISTAKES", default=1),
+)
+AGENTIC_JUDGE_CONTEXT_TOKEN_LIMIT = int(
+    load_env_var("AGENTIC_JUDGE_CONTEXT_TOKEN_LIMIT", default=1_000_000),
+)
+AGENTIC_JUDGE_MAX_ROUNDS = int(
+    load_env_var("AGENTIC_JUDGE_MAX_ROUNDS", default=50),
+)
+READ_FILE_MAX_CELLS = int(
+    load_env_var("AGENTIC_JUDGE_READ_FILE_MAX_CELLS", default=5000),
 )
 
 ### Custom Errors
@@ -1042,9 +1052,7 @@ def _prepare_case(
     # `use_existing` must still be True for the remaining file so prior
     # extractions are honored.
     effective_use_existing = (
-        True
-        if (cached_solution_csv_dir or cached_attempt_csv_dir)
-        else use_existing
+        True if (cached_solution_csv_dir or cached_attempt_csv_dir) else use_existing
     )
     result = process_case_files(
         files_to_process,
@@ -1243,9 +1251,7 @@ def _finalize_case(
             "golden_solution": (
                 sorted(golden_solution_files.keys()) if golden_solution_files else []
             ),
-            "ai_attempt": (
-                sorted(ai_attempt_files.keys()) if ai_attempt_files else []
-            ),
+            "ai_attempt": (sorted(ai_attempt_files.keys()) if ai_attempt_files else []),
             "context": context_file_path.name if context_file_path else None,
         },
     }
@@ -1291,9 +1297,7 @@ def _finalize_case(
         f"{token_tracking.get('total_completion_tokens', 0):,}"
     )
     if total_tokens > 0:
-        logger.info(
-            f"  Average ratio: {total_msg_size / total_tokens:.2f} chars/token"
-        )
+        logger.info(f"  Average ratio: {total_msg_size / total_tokens:.2f} chars/token")
     logger.info(f"  Total cost: ${token_tracking.get('total_cost', 0):.6f}")
     if token_tracking.get("evaluations"):
         logger.info("\n  Evaluations:")
@@ -1320,14 +1324,10 @@ def _finalize_case(
     if score_results:
         result["scores"] = score_results
         result["accuracy_score"] = (
-            score_results["criteria_scores"]
-            .get("Accuracy", {})
-            .get("normalized_score")
+            score_results["criteria_scores"].get("Accuracy", {}).get("normalized_score")
         )
         result["formula_score"] = (
-            score_results["criteria_scores"]
-            .get("Formula", {})
-            .get("normalized_score")
+            score_results["criteria_scores"].get("Formula", {}).get("normalized_score")
         )
         result["formatting_score"] = (
             score_results["criteria_scores"]
@@ -1364,7 +1364,10 @@ AGENTIC_JUDGE_TOOLS = [
                 "golden solution directories. You must specify the row and column "
                 "range to extract. Use the file metadata provided in the prompt "
                 "(dimensions and additional_format.txt) to decide which ranges to "
-                "inspect."
+                "inspect. HARD LIMIT: a single call may not cover more than "
+                "5000 cells ((end_row - start_row + 1) * (end_col - start_col + "
+                "1)). Requests exceeding this are rejected; split large regions "
+                "into multiple smaller calls."
             ),
             "parameters": {
                 "type": "object",
@@ -1392,9 +1395,7 @@ AGENTIC_JUDGE_TOOLS = [
                     },
                     "end_row": {
                         "type": "integer",
-                        "description": (
-                            "Last row to include (1-based, inclusive)."
-                        ),
+                        "description": ("Last row to include (1-based, inclusive)."),
                     },
                     "start_col": {
                         "type": "string",
@@ -1419,7 +1420,118 @@ AGENTIC_JUDGE_TOOLS = [
                 ],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_check",
+            "description": (
+                "Record (upsert) a pass/fail decision and summary for a rubric "
+                "check in the current category. Must be called for every check "
+                "letter before you stop. Calling again for the same letter "
+                "overwrites the decision/summary but preserves any mistakes "
+                "already appended via append_mistake."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "check": {
+                        "type": "string",
+                        "description": ("The rubric check letter (e.g. 'A')."),
+                    },
+                    "decision": {
+                        "type": "string",
+                        "enum": ["pass", "fail"],
+                        "description": "Your pass/fail decision for this check.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "Brief explanation of your assessment for this check."
+                        ),
+                    },
+                },
+                "required": ["check", "decision", "summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_mistake",
+            "description": (
+                "Append a single mistake to a check that has already been "
+                "recorded via record_check. Call once per mistake. The "
+                "corresponding record_check must have been called first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "check": {
+                        "type": "string",
+                        "description": "The rubric check letter (e.g. 'A').",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": (
+                            "Cell / range reference where the mistake occurs "
+                            "(e.g. 'Sheet1!B7')."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What is wrong.",
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["minor", "major"],
+                        "description": "Severity of the mistake.",
+                    },
+                },
+                "required": ["check", "location", "description", "severity"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_working_judgement",
+            "description": (
+                "Return the current working judgement state for this category "
+                "as JSON. Useful to review what you've recorded so far before "
+                "finalizing."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evict_tool_results",
+            "description": (
+                "Drop all prior rounds' read_file / scratchpad tool-call and "
+                "tool-result messages from the wire context (rounds strictly "
+                "before before_round). The findings from those reads should "
+                "already have been absorbed into your working judgement via "
+                "record_check / append_mistake. Use this when the context "
+                "pressure signal tells you context is filling up."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "before_round": {
+                        "type": "integer",
+                        "description": (
+                            "Evict every tool-call/tool-result pair whose round "
+                            "index is strictly less than this number. Round "
+                            "numbering starts at 1 for the first API call."
+                        ),
+                    },
+                },
+                "required": ["before_round"],
+            },
+        },
+    },
 ]
 
 
@@ -1479,17 +1591,6 @@ def _render_prior_findings_block(prior_findings) -> str | None:
     return f"Findings from prior categories (for reference):\n{prior_findings}\n\n"
 
 
-def _render_prior_response_example_block(example) -> str | None:
-    if not example:
-        return None
-    return (
-        "Here is an example of a correctly formatted JSON response from "
-        "a prior category evaluation. Your response MUST follow this "
-        "exact structure (with the current category name as the key):\n"
-        f"{example}\n\n"
-    )
-
-
 def _build_agentic_context_messages(context_file_path) -> list[dict]:
     """Build context messages for the agentic judge, supporting .txt and PDFs.
 
@@ -1528,9 +1629,7 @@ def _build_agentic_context_messages(context_file_path) -> list[dict]:
                 {"type": "text", "text": f"Case context ({context_file_path.name}):"},
                 {
                     "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime_type};base64,{base64_content}"
-                    },
+                    "image_url": {"url": f"data:{mime_type};base64,{base64_content}"},
                 },
             ],
         }
@@ -1577,6 +1676,319 @@ def _measure_message_chars(msg) -> int:
                 total += len(getattr(func, "arguments", "") or "")
 
     return total
+
+
+def _msg_to_dict(m):
+    """Convert an SDK message or plain dict to a plain dict for logging."""
+    if isinstance(m, dict):
+        return m
+
+    logger.warning(
+        f"  Warning: encountered non-dict message of type {type(m)}; \n content: {m}"
+    )
+
+    return {"role": "unknown", "content": str(m)}
+
+
+class WorkingJudgement:
+    """Per-category scratchpad state mutated by record_check / append_mistake."""
+
+    def __init__(self, category: str, check_letters: list[str]):
+        self.category = category
+        self.check_letters = list(check_letters)
+        self.working: dict[str, dict] = {}
+        self.pending: set[str] = set(self.check_letters)
+
+    def record_check(self, letter: str, decision: str, summary: str) -> str:
+        if letter not in self.check_letters:
+            return (
+                f"Error: unknown check '{letter}' for {self.category}. "
+                f"Valid letters: {', '.join(self.check_letters)}."
+            )
+        if decision not in ("pass", "fail"):
+            return f"Error: decision must be 'pass' or 'fail' (got '{decision}')."
+        if letter in self.working:
+            self.working[letter]["decision"] = decision
+            self.working[letter]["summary"] = summary
+        else:
+            self.working[letter] = {
+                "check": letter,
+                "decision": decision,
+                "summary": summary,
+                "mistakes": [],
+            }
+        self.pending.discard(letter)
+        return (
+            f"Recorded check {letter} as {decision}. Coverage: {self.coverage_str()}."
+        )
+
+    def append_mistake(
+        self, letter: str, location: str, description: str, severity: str
+    ) -> str:
+        if letter not in self.check_letters:
+            return (
+                f"Error: unknown check '{letter}' for {self.category}. "
+                f"Valid letters: {', '.join(self.check_letters)}."
+            )
+        if letter not in self.working:
+            return (
+                f"Error: cannot append_mistake to '{letter}' before "
+                f"record_check. Call record_check('{letter}', ...) first."
+            )
+        if severity not in ("minor", "major"):
+            return f"Error: severity must be 'minor' or 'major' (got '{severity}')."
+        self.working[letter]["mistakes"].append(
+            {
+                "location": location,
+                "description": description,
+                "severity": severity,
+            }
+        )
+        count = len(self.working[letter]["mistakes"])
+        return (
+            f"Appended mistake to {letter} (now {count} mistake"
+            f"{'s' if count != 1 else ''}). "
+            f"Coverage: {self.coverage_str()}."
+        )
+
+    def coverage_str(self) -> str:
+        marks = " ".join(f"{l}\u2713" for l in self.check_letters if l in self.working)
+        pending_letters = [l for l in self.check_letters if l in self.pending]
+        if pending_letters:
+            return f"{marks or '(none yet)'} | pending: {', '.join(pending_letters)}"
+        return marks or "(none)"
+
+    def finalize(self) -> list[dict]:
+        return [self.working[l] for l in self.check_letters if l in self.working]
+
+
+def _execute_scratchpad_tool(tool_call, working: WorkingJudgement) -> str:
+    """Dispatch record_check / append_mistake / get_working_judgement calls."""
+    name = tool_call.function.name
+    try:
+        args = json.loads(tool_call.function.arguments or "{}")
+    except json.JSONDecodeError as e:
+        return f"Error: could not parse tool arguments JSON: {e}"
+
+    if name == "record_check":
+        letter = str(args.get("check", "")).strip().upper()
+        decision = str(args.get("decision", "")).strip().lower()
+        summary = str(args.get("summary", ""))
+        return working.record_check(letter, decision, summary)
+
+    if name == "append_mistake":
+        letter = str(args.get("check", "")).strip().upper()
+        location = str(args.get("location", ""))
+        description = str(args.get("description", ""))
+        severity = str(args.get("severity", "")).strip().lower()
+        return working.append_mistake(letter, location, description, severity)
+
+    if name == "get_working_judgement":
+        return json.dumps(
+            {
+                "category": working.category,
+                "working": {
+                    l: working.working[l]
+                    for l in working.check_letters
+                    if l in working.working
+                },
+                "pending": [l for l in working.check_letters if l in working.pending],
+            },
+            indent=2,
+        )
+
+    return f"Error: unknown scratchpad tool '{name}'."
+
+
+class AgenticCategoryLoop:
+    """Holds wire messages, append-only transcript, and per-round bookkeeping.
+
+    Wire (`messages`) is what gets sent to the API and can be mutated by
+    eviction. `transcript` is append-only and never reordered; evicted
+    entries are flagged with `_evicted_at_round` rather than deleted.
+    Every mutation to `messages` goes through `append_wire` so the two stay
+    in sync.
+    """
+
+    def __init__(self, category: str, check_letters: list[str], seed_messages: list):
+        self.category = category
+        self.working = WorkingJudgement(category, check_letters)
+        self.messages: list = list(seed_messages)
+        # parallel meta to `messages`: {"round": int, "tag": str|None}
+        self.message_meta: list[dict] = [
+            {"round": 0, "tag": "setup"} for _ in seed_messages
+        ]
+        self.transcript: list[dict] = [
+            {
+                "type": "msg",
+                "msg": _msg_to_dict(m),
+                "tag": "setup",
+                "round": 0,
+                "_evicted_at_round": None,
+            }
+            for m in seed_messages
+        ]
+        self.round: int = 0
+        self.last_prompt_tokens: int = 0
+
+    def append_wire(self, msg, tag: str | None = None) -> None:
+        self.messages.append(msg)
+        self.message_meta.append({"round": self.round, "tag": tag})
+        self.transcript.append(
+            {
+                "type": "msg",
+                "msg": _msg_to_dict(msg),
+                "tag": tag,
+                "round": self.round,
+                "_evicted_at_round": None,
+            }
+        )
+
+    def log_event(self, event_type: str, **data) -> None:
+        self.transcript.append(
+            {
+                "type": "event",
+                "event": event_type,
+                "round": self.round,
+                **data,
+            }
+        )
+
+    def append_synthetic_final(self, judgement: list[dict]) -> None:
+        """Record the reconstructed final judgement in the transcript."""
+        payload = json.dumps({self.category: judgement}, indent=2)
+        self.transcript.append(
+            {
+                "type": "msg",
+                "msg": {"role": "assistant", "content": payload},
+                "tag": "synthetic_final",
+                "round": self.round,
+                "_evicted_at_round": None,
+            }
+        )
+
+    def evict(self, before_round: int) -> str:
+        """Drop tool-call / tool-result pairs with round < before_round."""
+        to_evict_indices = [
+            i
+            for i, meta in enumerate(self.message_meta)
+            if 0 < meta["round"] < before_round
+            and meta.get("tag") in ("model_tool_call", "tool_result")
+        ]
+        if not to_evict_indices:
+            return (
+                "No eligible rounds to evict. evict_tool_results only drops "
+                "tool-call/tool-result pairs from rounds before the given "
+                "round that still remain in wire context."
+            )
+
+        dropped_chars = sum(
+            _measure_message_chars(self.messages[i]) for i in to_evict_indices
+        )
+        rounds_evicted = sorted(
+            {self.message_meta[i]["round"] for i in to_evict_indices}
+        )
+        first_r, last_r = rounds_evicted[0], rounds_evicted[-1]
+        stub = {
+            "role": "user",
+            "content": (
+                f"[evicted rounds {first_r}-{last_r} - read_file results "
+                f"absorbed into working judgement]"
+            ),
+        }
+        evict_set = set(to_evict_indices)
+        new_msgs, new_meta = [], []
+        inserted = False
+        for i, (m, meta) in enumerate(zip(self.messages, self.message_meta)):
+            if i in evict_set:
+                if not inserted:
+                    new_msgs.append(stub)
+                    new_meta.append({"round": self.round, "tag": "evict_stub"})
+                    inserted = True
+                continue
+            new_msgs.append(m)
+            new_meta.append(meta)
+        self.messages = new_msgs
+        self.message_meta = new_meta
+
+        for entry in self.transcript:
+            if entry.get("type") != "msg":
+                continue
+            if entry.get("_evicted_at_round") is not None:
+                continue
+            if entry.get("tag") not in ("model_tool_call", "tool_result"):
+                continue
+            if first_r <= entry.get("round", -1) <= last_r:
+                entry["_evicted_at_round"] = self.round
+
+        self.log_event(
+            "evict",
+            dropped_rounds=[first_r, last_r],
+            dropped_messages=len(to_evict_indices),
+            dropped_chars=dropped_chars,
+        )
+        return (
+            f"Evicted {len(rounds_evicted)} round(s) ({first_r}-{last_r}). "
+            f"Wire context reduced by ~{dropped_chars // 1000}K chars."
+        )
+
+
+def _wire_char_total(messages) -> int:
+    """Sum of character counts across all wire messages."""
+    return sum(_measure_message_chars(m) for m in messages)
+
+
+def _estimate_wire_tokens(wire_chars: int, chars_per_token: float) -> int:
+    """Convert wire chars to an estimated token count using a calibrated ratio.
+
+    `chars_per_token` is computed from the most recent API call's
+    ``usage.prompt_tokens`` vs. the wire chars at call time. Falls back to
+    a conservative 2.5 when no calibration is available (CSV-dense content
+    is ~1-2 chars/token; English prose is ~4).
+    """
+    cpt = chars_per_token if chars_per_token and chars_per_token > 0 else 2.5
+    return int(wire_chars / cpt)
+
+
+def _build_pressure_signal(
+    prompt_tokens: int, limit: int, rounds_elapsed: int
+) -> tuple[str, str]:
+    """Return (status_line, tier) for the current context pressure level.
+
+    Tier is one of 'low' (<70%), 'advisory' (70-85%), 'strong' (85-95%),
+    'forced' (>=95%).
+    """
+    pct = (prompt_tokens / limit * 100) if limit > 0 else 0.0
+
+    def _k(n: int) -> str:
+        return f"~{n // 1000}K" if n >= 1000 else f"~{n}"
+
+    status = (
+        f"[context: {_k(prompt_tokens)} / {_k(limit)} tokens "
+        f"({pct:.0f}%). {rounds_elapsed} rounds elapsed.]"
+    )
+    if pct < 10:
+        tier = "low"
+    elif pct < 20:
+        tier = "advisory"
+    elif pct < 80:
+        tier = "strong"
+    else:
+        tier = "forced"
+
+    if tier == "advisory":
+        status += (
+            "\nConsider evict_tool_results to drop rounds whose findings "
+            "you've already recorded."
+        )
+    elif tier == "strong":
+        status += "\nYou must evict stale reads or finalize on your next turn."
+    elif tier == "forced":
+        status += (
+            "\nYou must finalize now. Call record_check for every pending "
+            "check or evict stale reads before calling more read_file."
+        )
+    return status, tier
 
 
 def _execute_read_file(tool_call, attempt_dir, solution_dir):
@@ -1646,6 +2058,17 @@ def _execute_read_file(tool_call, attempt_dir, solution_dir):
             f"end_col must be >= start_col."
         )
 
+    num_rows = end_row - start_row + 1
+    num_cols = end_col_idx - start_col_idx + 1
+    cells = num_rows * num_cols
+    if cells > READ_FILE_MAX_CELLS:
+        return (
+            f"Error: requested range is {cells} cells "
+            f"({num_rows} rows x {num_cols} cols), which exceeds the "
+            f"{READ_FILE_MAX_CELLS}-cell per-call limit. Split the request "
+            f"into multiple smaller read_file calls."
+        )
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             reader = csv_mod.reader(f)
@@ -1657,9 +2080,7 @@ def _execute_read_file(tool_call, attempt_dir, solution_dir):
     total_cols = max((len(r) for r in all_rows), default=0)
 
     if start_row > total_rows:
-        return (
-            f"Error: start_row {start_row} exceeds file row count ({total_rows})."
-        )
+        return f"Error: start_row {start_row} exceeds file row count ({total_rows})."
 
     # Clamp end_row to actual file size
     end_row = min(end_row, total_rows)
@@ -1703,7 +2124,7 @@ def agentic_judge_case(
     cached_attempt_csv_dir: str = None,
     attempt_sheet_name_filter: bool = False,
     carry_over_context: bool = True,
-    max_tool_rounds: int = 20,
+    max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
 ):
     """Execute the judging workflow using an agentic multi-turn approach.
 
@@ -1777,13 +2198,9 @@ def agentic_judge_case(
 
     # Gather available files (no shortening — use raw extracted CSVs)
     golden_solution_files = (
-        prepare_directory_files(golden_solution_dir)
-        if golden_solution_dir
-        else {}
+        prepare_directory_files(golden_solution_dir) if golden_solution_dir else {}
     )
-    ai_attempt_files = (
-        prepare_directory_files(ai_attempt_dir) if ai_attempt_dir else {}
-    )
+    ai_attempt_files = prepare_directory_files(ai_attempt_dir) if ai_attempt_dir else {}
 
     attempt_file_list = sorted(ai_attempt_files.keys())
     solution_file_list = sorted(golden_solution_files.keys())
@@ -1814,8 +2231,6 @@ def agentic_judge_case(
 
     all_responses = {}
     parse_failures = {}
-    prior_findings_text = None
-    first_successful_response = None
 
     token_tracking = {
         "evaluations": {},
@@ -1827,29 +2242,40 @@ def agentic_judge_case(
         "total_cost": 0.0,
     }
 
+    # Preload rubric for check-letter derivation per category
+    with open(str(rubric_json_path), "r", encoding="utf-8") as _rf:
+        _rubric_data = json.load(_rf)
+
     for stage_idx, category in enumerate(CHECK_ORDER):
         logger.info(f"\n  [Category] {category} (stage {stage_idx})...")
 
         rubric_checks_text = render_rubric_checks(str(rubric_json_path), category)
+        num_checks = len(_rubric_data.get(category, []))
+        check_letters = list(string.ascii_uppercase[:num_checks])
 
         compile_kwargs = dict(
             category=category,
             rubric_checks_text=rubric_checks_text,
-            attempt_files_text=_render_files_text(attempt_file_list, attempt_file_metadata),
-            solution_files_text=_render_files_text(solution_file_list, solution_file_metadata),
-            prior_findings=_render_prior_findings_block(
-                prior_findings_text if carry_over_context else None
+            check_letters_text=", ".join(check_letters),
+            attempt_files_text=_render_files_text(
+                attempt_file_list, attempt_file_metadata
             ),
-            prior_response_example=_render_prior_response_example_block(
-                first_successful_response
+            solution_files_text=_render_files_text(
+                solution_file_list, solution_file_metadata
+            ),
+            prior_findings=_render_prior_findings_block(
+                json.dumps(all_responses, indent=2)
+                if carry_over_context and all_responses
+                else None
             ),
         )
         if context_messages:
             compile_kwargs["context_messages"] = context_messages
 
         stages = compile_prompt(template_path, **compile_kwargs)
-        # Single-stage template: one list of messages seeds the tool-calling loop.
-        messages = list(stages[0])
+        seed_messages = list(stages[0])
+
+        state = AgenticCategoryLoop(category, check_letters, seed_messages)
 
         cumulative_metrics = {
             "message_size": 0,
@@ -1858,162 +2284,375 @@ def agentic_judge_case(
             "completion_tokens": 0,
             "total_tokens": 0,
         }
+        tool_call_stats: dict[str, int] = {
+            t["function"]["name"]: 0 for t in AGENTIC_JUDGE_TOOLS
+        }
+        tool_call_args_log: list[dict] = []
+        # Seed message chars are counted up-front; subsequent additions are
+        # counted as they're appended so the running gap with
+        # response.usage.prompt_tokens reflects eviction savings.
+        for m in state.messages:
+            size = _measure_message_chars(m)
+            cumulative_metrics["message_size"] += size
+            cumulative_metrics["message_size_with_images"] += size
 
-        # Multi-turn tool-calling loop
-        parse_success = False
-        response_text = None
-        failed_responses = []
-        msgs_measured = 0  # tracks how many messages have been counted
+        api_retries = 0
+        max_api_retries = 5
+        chars_per_token = 0.0  # calibrated from each real usage.prompt_tokens
 
-        for round_idx in range(max_tool_rounds):
-            logger.info(f"    Round {round_idx + 1}...")
+        round_idx = 0
+        while round_idx < max_tool_rounds:
+            state.round = round_idx + 1
+            logger.info(f"    Round {state.round}...")
+
+            # Pressure signal: estimate the upcoming call's tokens directly
+            # from current wire chars (calibrated via the most recent
+            # response.usage). last_prompt_tokens alone lags by a turn —
+            # it misses huge tool results appended between calls.
+            wire_chars_pre = _wire_char_total(state.messages)
+            wire_tokens_est = _estimate_wire_tokens(wire_chars_pre, chars_per_token)
+            status, tier = _build_pressure_signal(
+                wire_tokens_est,
+                AGENTIC_JUDGE_CONTEXT_TOKEN_LIMIT,
+                state.round - 1,
+            )
+            logger.info(f"      Pressure ({tier}): {status.splitlines()[0]}")
+            pressure_msg = {"role": "user", "content": status}
+            state.append_wire(pressure_msg, tag="pressure_note")
+            psize = _measure_message_chars(pressure_msg)
+            cumulative_metrics["message_size"] += psize
+            cumulative_metrics["message_size_with_images"] += psize
+
+            # Snapshot wire chars at the moment we actually send — this is
+            # what response.usage.prompt_tokens will correspond to, so the
+            # ratio we derive below is calibrated against the real call.
+            wire_chars_at_call = _wire_char_total(state.messages)
 
             try:
                 response = client.chat.completions.create(
                     model=model,
-                    messages=messages,
+                    messages=state.messages,
                     tools=AGENTIC_JUDGE_TOOLS,
                 )
             except Exception as e:
-                wait = min(2**round_idx + 1, 30)
+                err_str = str(e)
+                # Context-length errors (400) are not retryable — the same
+                # payload will fail again. Break out and let partial-failure
+                # handling save what we've recorded so far.
+                if "maximum context length" in err_str or (
+                    "400" in err_str and "context" in err_str.lower()
+                ):
+                    logger.error(
+                        f"    Context-length overflow (round {state.round}): {e}. "
+                        f"Stopping category; partial judgement will be saved."
+                    )
+                    state.log_event(
+                        "context_overflow",
+                        error=err_str[:500],
+                        wire_chars=wire_chars_at_call,
+                    )
+                    break
+                api_retries += 1
+                if api_retries > max_api_retries:
+                    logger.error(
+                        f"    Giving up after {max_api_retries} API retries: {e}"
+                    )
+                    break
+                wait = min(2**api_retries + 1, 30)
                 logger.warning(
-                    f"    API error (round {round_idx + 1}): {e}. "
+                    f"    API error (round {state.round}, retry "
+                    f"{api_retries}/{max_api_retries}): {e}. "
                     f"Retrying in {wait}s..."
                 )
                 time.sleep(wait)
-                continue
+                continue  # retry same round without advancing round_idx
+            api_retries = 0
 
             usage = response.usage
-
-            # Measure only messages added since the last round
-            for m in messages[msgs_measured:]:
-                cumulative_metrics["message_size"] += _measure_message_chars(m)
-                cumulative_metrics["message_size_with_images"] += (
-                    _measure_message_chars(m)
-                )
-            msgs_measured = len(messages)
-
             if usage:
                 cumulative_metrics["prompt_tokens"] += usage.prompt_tokens or 0
-                cumulative_metrics["completion_tokens"] += (
-                    usage.completion_tokens or 0
-                )
+                cumulative_metrics["completion_tokens"] += usage.completion_tokens or 0
                 cumulative_metrics["total_tokens"] += usage.total_tokens or 0
+                if usage.prompt_tokens:
+                    state.last_prompt_tokens = usage.prompt_tokens
+                    if wire_chars_at_call > 0:
+                        chars_per_token = wire_chars_at_call / usage.prompt_tokens
 
             choice = response.choices[0]
+            msg = choice.message
+            msg_size = _measure_message_chars(msg)
+            cumulative_metrics["message_size"] += msg_size
+            cumulative_metrics["message_size_with_images"] += msg_size
 
-            # Check if the model wants to call tools
-            if choice.message.tool_calls:
-                # Append assistant message with tool calls
-                messages.append(choice.message)
+            if msg.tool_calls:
+                state.append_wire(msg, tag="model_tool_call")
 
-                # Execute each tool call
-                for tool_call in choice.message.tool_calls:
-                    logger.info(
-                        f"      Tool call: {tool_call.function.name}"
-                        f"({tool_call.function.arguments})"
-                    )
-                    tool_result = _execute_read_file(
-                        tool_call, ai_attempt_dir, golden_solution_dir
-                    )
-                    messages.append(
+                for tc in msg.tool_calls:
+                    name = tc.function.name
+                    args_preview = str(tc.function.arguments or "")[:200]
+                    logger.info(f"      Tool call: {name}({args_preview})")
+                    tool_call_stats[name] = tool_call_stats.get(name, 0) + 1
+                    try:
+                        _args_parsed = json.loads(tc.function.arguments or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        _args_parsed = {"_raw": tc.function.arguments}
+                    tool_call_args_log.append(
                         {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": tool_result,
+                            "round": state.round,
+                            "phase": "main",
+                            "tool": name,
+                            "tool_call_id": tc.id,
+                            "arguments": _args_parsed,
                         }
                     )
+
+                    if name == "read_file":
+                        tool_result = _execute_read_file(
+                            tc, ai_attempt_dir, golden_solution_dir
+                        )
+                    elif name == "evict_tool_results":
+                        try:
+                            args = json.loads(tc.function.arguments or "{}")
+                            before_round = int(args.get("before_round", 0))
+                        except (json.JSONDecodeError, ValueError, TypeError) as e:
+                            tool_result = (
+                                f"Error: invalid arguments for "
+                                f"evict_tool_results: {e}"
+                            )
+                        else:
+                            # Never evict the current round mid-iteration —
+                            # doing so would orphan the tool_call that
+                            # invoked evict_tool_results itself.
+                            before_round = min(before_round, state.round)
+                            tool_result = state.evict(before_round)
+                    elif name in (
+                        "record_check",
+                        "append_mistake",
+                        "get_working_judgement",
+                    ):
+                        tool_result = _execute_scratchpad_tool(tc, state.working)
+                    else:
+                        tool_result = f"Error: unknown tool '{name}'."
+
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result,
+                    }
+                    state.append_wire(tool_msg, tag="tool_result")
+                    tsize = _measure_message_chars(tool_msg)
+                    cumulative_metrics["message_size"] += tsize
+                    cumulative_metrics["message_size_with_images"] += tsize
+
+                round_idx += 1
                 continue
 
-            # No tool calls — this is the final response
-            response_text = choice.message.content
+            # No tool calls: apply finalization rules
+            if msg.content:
+                state.append_wire(msg, tag="assistant_text")
 
-            # Try to parse as judgment JSON
-            try:
-                if not response_text or response_text.strip() == "":
-                    raise JudgeOutputError("Response content is empty.")
-
-                json_text = _extract_json_from_response(response_text)
-                parsed = json.loads(json_text)
-                category_data = parsed.get(category, parsed)
-
-                # Validate format
-                if not isinstance(category_data, list):
-                    raise JudgeOutputError(
-                        f"Category data is not a list: {type(category_data)}"
-                    )
-
-                for item in category_data:
-                    if not isinstance(item, dict):
-                        raise JudgeOutputError(
-                            f"Check item is not a dict: {item}"
-                        )
-                    missing = [
-                        f
-                        for f in ("check", "decision", "summary", "mistakes")
-                        if f not in item
-                    ]
-                    if missing:
-                        raise JudgeOutputError(
-                            f"Check item missing fields: {missing}. Item: {item}"
-                        )
-                    if not isinstance(item["mistakes"], list):
-                        raise JudgeOutputError(
-                            f"'mistakes' is not a list: {item['mistakes']}"
-                        )
-
-                # Enrich with check names
-                for item in category_data:
-                    check_letter = item.get("check")
-                    name = check_name_mapping.get((category, check_letter))
-                    if name:
-                        item["name"] = name
-
-                all_responses[category] = category_data
-                parse_success = True
-                if first_successful_response is None:
-                    first_successful_response = response_text
-                break
-
-            except (json.JSONDecodeError, JudgeOutputError) as e:
-                logger.warning(
-                    f"      Parse error on round {round_idx + 1}: {e}. "
-                    f"Response: {(response_text or '')[:200]}..."
+            if state.working.pending:
+                missing = [
+                    l for l in state.working.check_letters if l in state.working.pending
+                ]
+                nudge_content = (
+                    f"You haven't recorded decisions for: "
+                    f"{', '.join(missing)}. Call record_check for each "
+                    f"before concluding."
                 )
-                failed_responses.append(response_text or "<empty>")
+                nudge_msg = {"role": "user", "content": nudge_content}
+                state.append_wire(nudge_msg, tag="nudge")
+                nsize = _measure_message_chars(nudge_msg)
+                cumulative_metrics["message_size"] += nsize
+                cumulative_metrics["message_size_with_images"] += nsize
+                logger.info(f"      Nudged: pending {missing}")
+                round_idx += 1
+                continue
 
-                # Ask the model to fix its response
-                messages.append({"role": "assistant", "content": response_text})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Your response could not be parsed as valid JSON. "
-                            f"Error: {e}\n"
-                            f"Please provide your judgment again as a valid JSON "
-                            f"object with the exact format specified."
-                        ),
-                    }
-                )
+            # No tool calls, no pending → done
+            logger.info(
+                f"      Model stopped with all checks recorded: "
+                f"{state.working.coverage_str()}"
+            )
+            break
 
-        if not parse_success:
+        # Exhausted max_tool_rounds with pending checks → force the model to
+        # output its best-effort decisions for whatever it hasn't recorded.
+        if round_idx >= max_tool_rounds and state.working.pending:
+            missing_initial = [
+                l for l in state.working.check_letters if l in state.working.pending
+            ]
             logger.warning(
-                f"    WARNING: Failed to get valid judgment for {category} "
-                f"after {max_tool_rounds} rounds."
+                f"    Max rounds ({max_tool_rounds}) exhausted with pending "
+                f"checks {missing_initial}. Entering forced finalization."
+            )
+            state.log_event(
+                "forced_finalization_start",
+                pending=missing_initial,
+                max_tool_rounds=max_tool_rounds,
+            )
+
+            force_msg_content = (
+                f"You have exhausted the maximum number of tool-calling "
+                f"rounds ({max_tool_rounds}) but still have pending checks: "
+                f"{', '.join(missing_initial)}. You must now record your "
+                f"pass/fail decisions for ALL remaining pending checks "
+                f"immediately using record_check, based on the evidence you "
+                f"have already gathered. No further file reads or evictions "
+                f"are permitted; only record_check, append_mistake, and "
+                f"get_working_judgement tools are available. Output your "
+                f"best judgement now."
+            )
+            force_msg = {"role": "user", "content": force_msg_content}
+            state.append_wire(force_msg, tag="forced_finalization")
+            fsize = _measure_message_chars(force_msg)
+            cumulative_metrics["message_size"] += fsize
+            cumulative_metrics["message_size_with_images"] += fsize
+
+            finalize_tools = [
+                t
+                for t in AGENTIC_JUDGE_TOOLS
+                if t["function"]["name"]
+                in ("record_check", "append_mistake", "get_working_judgement")
+            ]
+
+            max_forced_rounds = 5
+            forced_round = 0
+            while forced_round < max_forced_rounds and state.working.pending:
+                forced_round += 1
+                state.round = max_tool_rounds + forced_round
+                logger.info(
+                    f"    Forced finalization round "
+                    f"{forced_round}/{max_forced_rounds}..."
+                )
+
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=state.messages,
+                        tools=finalize_tools,
+                    )
+                except Exception as e:
+                    logger.error(f"    Forced finalization API error: {e}. Stopping.")
+                    state.log_event("forced_finalization_error", error=str(e)[:500])
+                    break
+
+                usage = response.usage
+                if usage:
+                    cumulative_metrics["prompt_tokens"] += usage.prompt_tokens or 0
+                    cumulative_metrics["completion_tokens"] += (
+                        usage.completion_tokens or 0
+                    )
+                    cumulative_metrics["total_tokens"] += usage.total_tokens or 0
+
+                choice = response.choices[0]
+                msg = choice.message
+                msg_size = _measure_message_chars(msg)
+                cumulative_metrics["message_size"] += msg_size
+                cumulative_metrics["message_size_with_images"] += msg_size
+
+                if msg.tool_calls:
+                    state.append_wire(msg, tag="model_tool_call")
+                    for tc in msg.tool_calls:
+                        name = tc.function.name
+                        args_preview = str(tc.function.arguments or "")[:200]
+                        logger.info(f"      Tool call: {name}({args_preview})")
+                        tool_call_stats[name] = tool_call_stats.get(name, 0) + 1
+                        try:
+                            _args_parsed = json.loads(tc.function.arguments or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            _args_parsed = {"_raw": tc.function.arguments}
+                        tool_call_args_log.append(
+                            {
+                                "round": state.round,
+                                "phase": "forced_finalization",
+                                "tool": name,
+                                "tool_call_id": tc.id,
+                                "arguments": _args_parsed,
+                            }
+                        )
+                        if name in (
+                            "record_check",
+                            "append_mistake",
+                            "get_working_judgement",
+                        ):
+                            tool_result = _execute_scratchpad_tool(tc, state.working)
+                        else:
+                            tool_result = (
+                                f"Error: tool '{name}' is disabled in forced "
+                                f"finalization. Only record_check / "
+                                f"append_mistake / get_working_judgement are "
+                                f"allowed."
+                            )
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": tool_result,
+                        }
+                        state.append_wire(tool_msg, tag="tool_result")
+                        tsize = _measure_message_chars(tool_msg)
+                        cumulative_metrics["message_size"] += tsize
+                        cumulative_metrics["message_size_with_images"] += tsize
+                    continue
+
+                if msg.content:
+                    state.append_wire(msg, tag="assistant_text")
+
+                if state.working.pending:
+                    missing_now = [
+                        l
+                        for l in state.working.check_letters
+                        if l in state.working.pending
+                    ]
+                    nudge_content = (
+                        f"You still have not recorded decisions for: "
+                        f"{', '.join(missing_now)}. Call record_check for "
+                        f"each pending check now."
+                    )
+                    nudge_msg = {"role": "user", "content": nudge_content}
+                    state.append_wire(nudge_msg, tag="nudge")
+                    nsize = _measure_message_chars(nudge_msg)
+                    cumulative_metrics["message_size"] += nsize
+                    cumulative_metrics["message_size_with_images"] += nsize
+                else:
+                    break
+
+            state.log_event(
+                "forced_finalization_end",
+                pending_after=[
+                    l for l in state.working.check_letters if l in state.working.pending
+                ],
+                forced_rounds_used=forced_round,
+            )
+
+        # Exited the loop — figure out why.
+        if state.working.pending:
+            missing = [
+                l for l in state.working.check_letters if l in state.working.pending
+            ]
+            logger.warning(
+                f"    WARNING: {category} finishing with pending checks: "
+                f"{missing} (round_idx={round_idx}/{max_tool_rounds})"
             )
             parse_failures[category] = {
                 "success": False,
-                "count": len(failed_responses),
-                "responses": failed_responses,
+                "count": len(missing),
+                "responses": [f"Missing decisions for checks: {missing}"],
+                "pending_checks": missing,
+                "partial_recorded": [
+                    l for l in state.working.check_letters if l in state.working.working
+                ],
             }
-            all_responses[category] = {"raw_response": response_text}
-        else:
-            if failed_responses:
-                parse_failures[category] = {
-                    "success": True,
-                    "count": len(failed_responses),
-                    "responses": failed_responses,
-                }
+
+        final_judgement = state.working.finalize()
+        for item in final_judgement:
+            letter = item.get("check")
+            name = check_name_mapping.get((category, letter))
+            if name:
+                item["name"] = name
+
+        state.append_synthetic_final(final_judgement)
+        all_responses[category] = final_judgement
 
         # Track metrics
         token_tracking["evaluations"][category] = cumulative_metrics
@@ -2048,35 +2687,37 @@ def agentic_judge_case(
             f"{cumulative_metrics['completion_tokens']:,} completion | "
             f"Cost: ${cost_info['total_cost']:.6f}"
         )
+        logger.info(f"    Final coverage: {state.working.coverage_str()}")
 
-        # Save conversation for this category
-        serializable_msgs = []
-        for m in messages:
-            if hasattr(m, "model_dump"):
-                serializable_msgs.append(m.model_dump())
-            elif isinstance(m, dict):
-                serializable_msgs.append(m)
-            else:
-                serializable_msgs.append({"role": "unknown", "content": str(m)})
-
+        # Persist the full transcript (append-only, including evicted
+        # entries marked with _evicted_at_round and eviction events).
         conversation_logs_dir = output_dir / "judge_conversation_logs"
         conversation_logs_dir.mkdir(parents=True, exist_ok=True)
         conversation_path = (
             conversation_logs_dir / f"conversation_messages_{category}.json"
         )
         with open(conversation_path, "w", encoding="utf-8") as f:
-            json.dump(serializable_msgs, f, indent=2)
-        dump_messages_yaml(serializable_msgs, conversation_path.with_suffix(".yaml"))
+            json.dump(state.transcript, f, indent=2)
+        dump_messages_yaml(state.transcript, conversation_path.with_suffix(".yaml"))
 
-        # Build carry-over context for next category
-        if carry_over_context and parse_success:
-            finding_summary = json.dumps(
-                {category: all_responses[category]}, indent=2
+        total_tool_calls = sum(tool_call_stats.values())
+        if total_tool_calls:
+            stats_str = ", ".join(
+                f"{k}={v}" for k, v in sorted(tool_call_stats.items())
             )
-            if prior_findings_text:
-                prior_findings_text += f"\n\n{finding_summary}"
-            else:
-                prior_findings_text = finding_summary
+        else:
+            stats_str = "(none)"
+        logger.info(f"    Tool calls: {total_tool_calls} total | {stats_str}")
+
+        tool_calls_path = (
+            conversation_logs_dir / f"tool_calls_{category}.json"
+        )
+        with open(tool_calls_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"stats": tool_call_stats, "calls": tool_call_args_log},
+                f,
+                indent=2,
+            )
 
         logger.info(f"    {category} evaluation completed")
         time.sleep(0.5)
@@ -2273,8 +2914,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-tool-rounds",
         type=int,
-        default=20,
-        help="(Agentic only) Maximum number of tool-calling rounds per category (default: 20)",
+        default=AGENTIC_JUDGE_MAX_ROUNDS,
+        help=f"(Agentic only) Maximum number of tool-calling rounds per category (default: {AGENTIC_JUDGE_MAX_ROUNDS})",
     )
 
     # Args preprocessing

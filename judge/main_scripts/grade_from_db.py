@@ -48,6 +48,11 @@ _spec.loader.exec_module(_judge_mod)
 judge_case = _judge_mod.judge_case
 agentic_judge_case = _judge_mod.agentic_judge_case
 
+### Obtain constans
+AGENTIC_JUDGE_MAX_ROUNDS = int(
+    load_env_var("AGENTIC_JUDGE_MAX_ROUNDS", default=50),
+)
+
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -747,7 +752,8 @@ def main(args):
             cached_attempt_dir = attempt_csv_cache.get(attempt_id)
             if not cached_attempt_dir:
                 attempt_cache_dir = (
-                    attempt_cache_base / f"attempt_id={attempt_id}{attempt_cache_suffix}"
+                    attempt_cache_base
+                    / f"attempt_id={attempt_id}{attempt_cache_suffix}"
                 )
                 if attempt_cache_dir.exists() and list(attempt_cache_dir.glob("*.csv")):
                     cached_attempt_dir = str(attempt_cache_dir)
@@ -852,12 +858,11 @@ def main(args):
                 and attempt_id not in attempt_csv_cache
             ):
                 attempt_cache_dir = (
-                    attempt_cache_base / f"attempt_id={attempt_id}{attempt_cache_suffix}"
+                    attempt_cache_base
+                    / f"attempt_id={attempt_id}{attempt_cache_suffix}"
                 )
                 if not attempt_cache_dir.exists():
-                    shutil.copytree(
-                        result["attempt_csv_dir"], str(attempt_cache_dir)
-                    )
+                    shutil.copytree(result["attempt_csv_dir"], str(attempt_cache_dir))
                     logger.info(
                         f"  Persisted attempt CSVs for attempt {attempt_id}: "
                         f"{attempt_cache_dir}"
@@ -1070,8 +1075,8 @@ Examples:
     parser.add_argument(
         "--max-tool-rounds",
         type=int,
-        default=20,
-        help="(Agentic only) Max tool-calling rounds per category (default: 20)",
+        default=AGENTIC_JUDGE_MAX_ROUNDS,
+        help=f"(Agentic only) Max tool-calling rounds per category (default: {AGENTIC_JUDGE_MAX_ROUNDS})",
     )
 
     # Execution modes
