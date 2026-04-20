@@ -88,6 +88,45 @@ def load_env_var(var_name: str, default=None, prefix=None, required=False):
     return value
 
 
+### YAML dump helpers for conversation messages
+class _LiteralStr(str):
+    pass
+
+
+def _literal_str_representer(dumper, data):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+
+
+yaml.add_representer(_LiteralStr, _literal_str_representer)
+yaml.add_representer(_LiteralStr, _literal_str_representer, Dumper=yaml.SafeDumper)
+
+
+def _blockify_multiline_strings(obj):
+    if isinstance(obj, str):
+        if "\n" in obj:
+            # PyYAML silently falls back to quoted style if any line has trailing whitespace.
+            return _LiteralStr("\n".join(line.rstrip() for line in obj.split("\n")))
+        return obj
+    if isinstance(obj, list):
+        return [_blockify_multiline_strings(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _blockify_multiline_strings(v) for k, v in obj.items()}
+    return obj
+
+
+def dump_messages_yaml(messages, path):
+    """Write conversation messages as YAML, using literal block scalars for multi-line strings."""
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            _blockify_multiline_strings(messages),
+            f,
+            sort_keys=False,
+            allow_unicode=True,
+            width=10_000,
+            default_flow_style=False,
+        )
+
+
 ### Argparser helper
 def str2bool(v):
     """Convert string to boolean for argparse."""

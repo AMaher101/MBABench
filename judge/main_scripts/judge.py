@@ -20,6 +20,7 @@ from utils.excel_utils import (
 from utils.llm_utils import calculate_cost, robust_send_message
 from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
+    dump_messages_yaml,
     get_absolute_path,
     load_env_var,
     load_project_configs,
@@ -912,11 +913,18 @@ def judge_case(
         time.sleep(0.5)
 
     # Save conversation messages for reference (one file per stage)
+    conversation_logs_dir = output_dir / "judge_conversation_logs"
+    conversation_logs_dir.mkdir(parents=True, exist_ok=True)
     for stage_category, stage_msgs in all_stage_conversations.items():
-        conversation_path = output_dir / f"conversation_messages_{stage_category}.json"
+        conversation_path = (
+            conversation_logs_dir / f"conversation_messages_{stage_category}.json"
+        )
         with open(conversation_path, "w", encoding="utf-8") as f:
             json.dump(stage_msgs, f, indent=2)
+        yaml_path = conversation_path.with_suffix(".yaml")
+        dump_messages_yaml(stage_msgs, yaml_path)
         logger.info(f" Conversation messages saved to: {conversation_path}")
+        logger.info(f" Conversation messages saved to: {yaml_path}")
 
     # Shared finalization: save judgement, scores, metadata, logs
     return _finalize_case(
@@ -2051,9 +2059,14 @@ def agentic_judge_case(
             else:
                 serializable_msgs.append({"role": "unknown", "content": str(m)})
 
-        conversation_path = output_dir / f"conversation_messages_{category}.json"
+        conversation_logs_dir = output_dir / "judge_conversation_logs"
+        conversation_logs_dir.mkdir(parents=True, exist_ok=True)
+        conversation_path = (
+            conversation_logs_dir / f"conversation_messages_{category}.json"
+        )
         with open(conversation_path, "w", encoding="utf-8") as f:
             json.dump(serializable_msgs, f, indent=2)
+        dump_messages_yaml(serializable_msgs, conversation_path.with_suffix(".yaml"))
 
         # Build carry-over context for next category
         if carry_over_context and parse_success:
