@@ -1164,6 +1164,7 @@ def _finalize_case(
     solution_context_reduced=False,
     attempt_context_reduced=False,
     context_reduced_details=None,
+    agentic=False,
 ):
     """Shared finalization: save judgement, calculate scores, write metadata."""
     output_dir = Path(output_dir)
@@ -1235,6 +1236,7 @@ def _finalize_case(
     metadata_dict = {
         "task_folder": task_folder_name,
         "grader_model": model,
+        "judge_mode": "agentic" if agentic else "non-agentic",
         "attempt_model": attempt_model,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "judge_version": versions["JUDGE_VERSION"],
@@ -2756,6 +2758,7 @@ def agentic_judge_case(
         golden_solution_dir=golden_solution_dir,
         ai_attempt_dir=ai_attempt_dir,
         parse_failures=parse_failures,
+        agentic=True,
     )
 
 
