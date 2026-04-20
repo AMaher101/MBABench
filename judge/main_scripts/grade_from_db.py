@@ -53,6 +53,93 @@ AGENTIC_JUDGE_MAX_ROUNDS = int(
     load_env_var("AGENTIC_JUDGE_MAX_ROUNDS", default=50),
 )
 
+# Task IDs that should use the agentic judge by default. Override per-run with
+# --agentic (force all on) or --no-agentic (force all off).
+TASKS_TO_GRADE_WITH_AGENTIC_JUDGE: set[int] = set(
+    [
+        104,
+        61,
+        296,
+        65,
+        127,
+        289,
+        386,
+        58,
+        307,
+        164,
+        321,
+        228,
+        50,
+        108,
+        75,
+        343,
+        304,
+        285,
+        389,
+        260,
+        73,
+        364,
+        176,
+        374,
+        67,
+        327,
+        174,
+        147,
+        238,
+        135,
+        92,
+        212,
+        379,
+        83,
+        197,
+        339,
+        262,
+        273,
+        373,
+        217,
+        384,
+        # 219, 1,712,711 chars
+        # 132, 1,685,414 chars
+    ]
+)
+
+
+def resolve_agentic_mode(
+    task_id: int, force_agentic: bool, force_no_agentic: bool
+) -> bool:
+    """Decide whether a single task should run under the agentic judge.
+
+    Precedence: force_no_agentic > force_agentic > per-task constant.
+    """
+    if force_no_agentic:
+        return False
+    if force_agentic:
+        return True
+    return task_id in TASKS_TO_GRADE_WITH_AGENTIC_JUDGE
+
+
+def add_agentic_cli_args(parser):
+    """Attach the --agentic / --no-agentic mutex group to an argparse parser."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--agentic",
+        action="store_true",
+        help=(
+            "Force the agentic judge for ALL attempts in this run, overriding "
+            "TASKS_TO_GRADE_WITH_AGENTIC_JUDGE. Without --agentic or "
+            "--no-agentic, each attempt is routed per-task from that list."
+        ),
+    )
+    group.add_argument(
+        "--no-agentic",
+        dest="no_agentic",
+        action="store_true",
+        help=(
+            "Force the standard judge for ALL attempts in this run, overriding "
+            "TASKS_TO_GRADE_WITH_AGENTIC_JUDGE."
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -360,9 +447,7 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
             download_file(source, dest, base_dir=files_base_dir)
             logger.info(f"  {name} (context, from starting) <- {name}")
         except Exception as e:
-            logger.error(
-                f"  Failed to download starting context file '{name}': {e}"
-            )
+            logger.error(f"  Failed to download starting context file '{name}': {e}")
 
     return task_folder
 
@@ -725,10 +810,15 @@ def main(args):
             logger.info("DRY RUN — would grade the following attempts:")
             logger.info("=" * 60)
             for a in attempts:
+                mode = (
+                    "agentic"
+                    if resolve_agentic_mode(a["task_id"], args.agentic, args.no_agentic)
+                    else "standard"
+                )
                 logger.info(
                     f"  Attempt {a['attempt_id']}: task='{a['task_name']}' "
                     f"(id={a['task_id']}), model={a['agent_model_name']}, "
-                    f"failed={a['agent_failed']}"
+                    f"failed={a['agent_failed']}, mode={mode}"
                 )
             logger.info(f"\nTotal: {len(attempts)} attempts")
             return
@@ -756,6 +846,7 @@ def main(args):
         for i, attempt in enumerate(attempts):
             task_id = attempt["task_id"]
             attempt_id = attempt["attempt_id"]
+            agentic = resolve_agentic_mode(task_id, args.agentic, args.no_agentic)
 
             # Check in-memory index first, then persistent cache on disk
             cached_dir = solution_csv_cache.get(task_id)
@@ -788,16 +879,17 @@ def main(args):
                 cache_notes.append(f"cached solution CSVs for task {task_id}")
             if cached_attempt_dir:
                 cache_notes.append(f"cached attempt CSVs for attempt {attempt_id}")
+            mode_note = f"mode={'agentic judge' if agentic else 'non-agentic judge'}"
             if cache_notes:
                 logger.info(
                     f"\n[{i + 1}/{len(attempts)}] "
-                    f"Processing attempt {attempt_id}... "
+                    f"Processing attempt {attempt_id} ({mode_note})... "
                     f"(using {'; '.join(cache_notes)})"
                 )
             else:
                 logger.info(
                     f"\n[{i + 1}/{len(attempts)}] "
-                    f"Processing attempt {attempt_id}..."
+                    f"Processing attempt {attempt_id} ({mode_note})..."
                 )
 
             # Warn if sheet name filtering is on for human attempts
@@ -848,7 +940,7 @@ def main(args):
                 cached_solution_csv_dir=cached_dir,
                 cached_attempt_csv_dir=cached_attempt_dir,
                 attempt_sheet_name_filter=attempt_filter,
-                agentic=args.agentic,
+                agentic=agentic,
                 carry_over_context=args.carry_over_context,
                 max_tool_rounds=args.max_tool_rounds,
             )
@@ -894,7 +986,7 @@ def main(args):
                 try:
                     try:
                         grading_id = write_grading_to_db(
-                            conn, attempt, result, model, agentic=args.agentic
+                            conn, attempt, result, model, agentic=agentic
                         )
                     except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
                         # Long grading runs can leave the DB connection idle for
@@ -910,7 +1002,7 @@ def main(args):
                             pass
                         conn = get_db_connection()
                         grading_id = write_grading_to_db(
-                            conn, attempt, result, model, agentic=args.agentic
+                            conn, attempt, result, model, agentic=agentic
                         )
                     result["grading_id"] = grading_id
                     logger.info(f"  Wrote grading to DB: id={grading_id}")
@@ -1080,11 +1172,7 @@ Examples:
     )
 
     # Agentic mode
-    parser.add_argument(
-        "--agentic",
-        action="store_true",
-        help="Use the agentic judge (multi-turn tool-calling, no context reduction)",
-    )
+    add_agentic_cli_args(parser)
     parser.add_argument(
         "--no-carry-over-context",
         dest="carry_over_context",
