@@ -22,6 +22,7 @@ import sys
 import time
 import traceback
 import urllib.request
+import uuid
 from pathlib import Path
 
 # Ensure judge/ directory is in Python path for local imports
@@ -352,6 +353,26 @@ def download_file(source, dest_path, base_dir=None):
     shutil.copy(str(src), str(dest_path))
 
 
+def upload_dir_to_s3(local_dir, bucket, key_prefix):
+    """Upload every file under *local_dir* to ``s3://bucket/key_prefix/<rel>``.
+
+    Preserves the relative directory structure. Returns a sorted list of
+    relative POSIX paths that were uploaded (suitable for gradings.raw_files).
+    """
+    local_dir = Path(local_dir)
+    s3 = _get_s3_client()
+    uploaded: list[str] = []
+    for p in local_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(local_dir).as_posix()
+        key = f"{key_prefix}/{rel}"
+        s3.upload_file(str(p), bucket, key)
+        uploaded.append(rel)
+    uploaded.sort()
+    return uploaded
+
+
 def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
     """Create a task folder under scratch with the layout judge_case expects.
 
@@ -478,6 +499,7 @@ def grade_single_attempt(
     agentic=False,
     carry_over_context=True,
     max_tool_rounds=20,
+    no_s3_upload=False,
 ):
     """Grade a single attempt. Returns a result dict."""
     attempt_id = attempt["attempt_id"]
@@ -601,7 +623,27 @@ def grade_single_attempt(
             with open(conversation_path) as f:
                 conversation = json.load(f)
 
-        raw_files_list = [f.name for f in output_dir.iterdir() if f.is_file()]
+        # Upload the full output_dir tree (files in subfolders included) to S3
+        # under a unique {timestamp}_{uuid} prefix. Done before the DB write so
+        # the gradings row always references a finalized location.
+        if no_s3_upload:
+            raw_files_path = str(output_dir)
+            raw_files_list = sorted(
+                p.relative_to(output_dir).as_posix()
+                for p in output_dir.rglob("*")
+                if p.is_file()
+            )
+        else:
+            bucket = load_env_var("S3_RAW_FILES_BUCKET", required=True)
+            prefix_root = load_env_var("S3_RAW_FILES_PREFIX", required=True)
+            folder_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            key_prefix = f"{prefix_root}/{folder_name}"
+            logger.info(
+                f"  Uploading raw files -> s3://{bucket}/{key_prefix}/ ..."
+            )
+            raw_files_list = upload_dir_to_s3(output_dir, bucket, key_prefix)
+            raw_files_path = f"s3://{bucket}/{key_prefix}/"
+            logger.info(f"  Uploaded {len(raw_files_list)} files to S3")
 
         # Extract scores from judge_case result
         scores = {
@@ -610,7 +652,7 @@ def grade_single_attempt(
             "format_grade": result.get("formatting_score") or 0,
             "final_score": result.get("final_score") or 0,
         }
-        scored_results = result.get("scores", {})
+        scored_results = result.get("score_results", {})
 
         # Warn loudly if expected scores are missing from judge_case result
         missing_scores = [
@@ -674,7 +716,7 @@ def grade_single_attempt(
             "solution_context_reduced": result.get("solution_context_reduced", False),
             "attempt_context_reduced": result.get("attempt_context_reduced", False),
             "context_reduced_details": result.get("context_reduced_details"),
-            "raw_files_path": str(output_dir),
+            "raw_files_path": raw_files_path,
             "raw_files": raw_files_list,
             "parse_failures": result.get("parse_failures"),
             "hard_parse_failures": hard_parse_failures,
@@ -1006,6 +1048,7 @@ def main(args):
                 agentic=agentic,
                 carry_over_context=args.carry_over_context,
                 max_tool_rounds=args.max_tool_rounds,
+                no_s3_upload=args.no_s3_upload,
             )
             results.append(result)
 
@@ -1300,6 +1343,16 @@ Examples:
         "--no-db-write",
         action="store_true",
         help="Run grading but do not write results to the database",
+    )
+    parser.add_argument(
+        "--no-s3-upload",
+        dest="no_s3_upload",
+        action="store_true",
+        help=(
+            "Skip uploading grading artifacts to S3. raw_files_path will be "
+            "set to the local output_dir instead, and raw_files will list "
+            "relative paths under it."
+        ),
     )
 
     args = parser.parse_args()
