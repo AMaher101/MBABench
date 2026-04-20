@@ -344,6 +344,26 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
         logger.error(f"  No solution xlsx downloaded for task '{task_name}'")
         return None
 
+    # --- Context PDFs from tasks.task_starting_files ---
+    # Starting files often include a "Questions.pdf" while the solution side
+    # has a "Questions with Answers.pdf". Both are staged here; the merger
+    # dedupes the question-only variant when an answer PDF is present.
+    starting_refs = extract_file_refs(attempt.get("task_starting_files"))
+    for name, source in starting_refs:
+        if Path(name).suffix.lower() != ".pdf":
+            continue
+        dest = task_folder / name
+        if dest.exists():
+            logger.info(f"  Skipping starting context '{name}' (already staged)")
+            continue
+        try:
+            download_file(source, dest, base_dir=files_base_dir)
+            logger.info(f"  {name} (context, from starting) <- {name}")
+        except Exception as e:
+            logger.error(
+                f"  Failed to download starting context file '{name}': {e}"
+            )
+
     return task_folder
 
 

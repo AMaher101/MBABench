@@ -899,6 +899,133 @@ def find_context_files_simple(source_dir: Path) -> Optional[Path]:
     return context_files[0]
 
 
+def find_and_merge_context_files(
+    source_dir: Path,
+    output_dir: Path,
+    merge_pdfs: bool = True,
+) -> Optional[Path]:
+    """Discover context files and write a single merged file to *output_dir*.
+
+    Looks in *source_dir* and *source_dir*/"task" for .pdf and .txt files.
+    PDFs take priority over TXTs when both exist. Files of the chosen type
+    are merged in sorted-filename order: PDFs via pypdf page concatenation,
+    TXTs via newline-separated concatenation with filename headers.
+
+    With merge_pdfs=False, falls back to the legacy single-file behavior
+    (pick the first file via find_context_files_simple).
+
+    Returns the destination path (output_dir/context.pdf or
+    output_dir/context.txt), or None if no context file was found.
+    """
+    if not merge_pdfs:
+        context_file = find_context_files_simple(source_dir)
+        if not context_file or not context_file.exists():
+            return None
+        ext = context_file.suffix.lower()
+        if ext == ".pdf":
+            dest = output_dir / "context.pdf"
+        elif ext == ".txt":
+            dest = output_dir / "context.txt"
+        else:
+            dest = output_dir / context_file.name
+        shutil.copy(str(context_file), str(dest))
+        logger.info(f"Context file: {context_file.name}")
+        return dest
+
+    pdfs = list(source_dir.glob("*.pdf"))
+    txts = list(source_dir.glob("*.txt"))
+    task_dir = source_dir / "task"
+    if task_dir.exists() and task_dir.is_dir():
+        pdfs.extend(task_dir.glob("*.pdf"))
+        txts.extend(task_dir.glob("*.txt"))
+
+    pdfs.sort(key=lambda p: p.name)
+    txts.sort(key=lambda p: p.name)
+
+    # Dedup: when an answer-containing PDF is present (e.g. "Questions with
+    # Answers.pdf"), drop the question-only sibling (e.g. "Questions.pdf").
+    # The answer variant is a superset, so including both wastes context.
+    has_answer_pdf = any("answer" in p.name.lower() for p in pdfs)
+    if has_answer_pdf:
+        question_only = [
+            p
+            for p in pdfs
+            if "question" in p.name.lower() and "answer" not in p.name.lower()
+        ]
+        if question_only:
+            pdfs = [p for p in pdfs if p not in question_only]
+            logger.info(
+                f"  Dropping question-only PDF(s) in favor of answer variant: "
+                f"{[p.name for p in question_only]}"
+            )
+
+    if pdfs:
+        if txts:
+            logger.warning(
+                f"  Ignoring {len(txts)} .txt context file(s) because PDFs are "
+                f"present: {[t.name for t in txts]}"
+            )
+        dest = output_dir / "context.pdf"
+        if len(pdfs) == 1:
+            shutil.copy(str(pdfs[0]), str(dest))
+            logger.info(f"  Context PDF: {pdfs[0].name}")
+            return dest
+
+        from pypdf import PdfWriter
+
+        writer = PdfWriter()
+        included, skipped = [], []
+        for p in pdfs:
+            try:
+                writer.append(str(p))
+                included.append(p.name)
+            except Exception as e:
+                skipped.append((p.name, str(e)))
+                logger.warning(f"  Skipping PDF {p.name} during merge: {e}")
+        if not included:
+            writer.close()
+            logger.error("  All context PDFs failed to merge; no context written")
+            return None
+        with open(dest, "wb") as f:
+            writer.write(f)
+        writer.close()
+        logger.info(
+            f"  Merged {len(included)} context PDFs into {dest.name} "
+            f"(order: {included})"
+        )
+        if skipped:
+            logger.warning(f"  Skipped {len(skipped)} PDF(s) during merge: {skipped}")
+        return dest
+
+    if txts:
+        dest = output_dir / "context.txt"
+        if len(txts) == 1:
+            shutil.copy(str(txts[0]), str(dest))
+            logger.info(f"  Context TXT: {txts[0].name}")
+            return dest
+
+        parts = []
+        included = []
+        for t in txts:
+            try:
+                with open(t, "r", encoding="utf-8") as f:
+                    parts.append(f"--- {t.name} ---\n\n{f.read()}")
+                included.append(t.name)
+            except Exception as e:
+                logger.warning(f"  Skipping TXT {t.name} during merge: {e}")
+        if not parts:
+            return None
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write("\n\n".join(parts))
+        logger.info(
+            f"  Merged {len(included)} context TXTs into {dest.name} "
+            f"(order: {included})"
+        )
+        return dest
+
+    return None
+
+
 def find_golden_solution_file(source_dir: Path) -> Path:
     """Find the golden solution file in the source directory.
 
@@ -956,6 +1083,7 @@ def copy_support_files(
     output_dir: Path,
     default_rubric_path: str = None,
     default_weights_path: str = None,
+    merge_context_pdfs: bool = True,
 ):
     """Copy context, rubric, and perturbations files from source to output directory.
 
@@ -964,25 +1092,19 @@ def copy_support_files(
         output_dir: Destination directory for copied files.
         default_rubric_path: Fallback path for rubric.json if not found in source_dir.
         default_weights_path: Fallback path for rubric_weights.json if not found in source_dir.
+        merge_context_pdfs: When True (default), concatenate all PDFs (or all
+            TXTs) found in the source into a single context file. When False,
+            only the first context file is used (legacy behavior).
     """
     copied_files = []
 
-    context_file = find_context_files_simple(source_dir)
-
-    if context_file:
-        if context_file.exists():
-            logger.info(f"Context file: {context_file.name}")
-            context_ext = context_file.suffix.lower()
-            if context_ext == ".pdf":
-                dest_path = output_dir / "context.pdf"
-            elif context_ext == ".txt":
-                dest_path = output_dir / "context.txt"
-            else:
-                dest_path = output_dir / context_file.name
-            shutil.copy(str(context_file), str(dest_path))
-            copied_files.append(str(dest_path))
-        else:
-            logger.info("Context file not found")
+    context_dest = find_and_merge_context_files(
+        source_dir, output_dir, merge_pdfs=merge_context_pdfs
+    )
+    if context_dest:
+        copied_files.append(str(context_dest))
+    else:
+        logger.info("Context file not found")
 
     rubric_json_source = source_dir / "rubric.json"
     if rubric_json_source.exists():
