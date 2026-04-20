@@ -51,3 +51,8 @@ judge:
   default_solution_context_char_limit: 1_000_000
   default_attempt_context_char_limit: 1_000_000
 
+agentic_judge:
+  version: 1
+  prompt_template: "prompts/agentic_judge_template_1.yaml"
+  prompt_version: "1"
+# EOF

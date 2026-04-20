@@ -352,6 +352,7 @@ def grade_single_attempt(
     client,
     rubric_path,
     template_path,
+    agentic_template_path,
     model,
     scratch_run_dir,
     files_base_dir=None,
@@ -417,6 +418,7 @@ def grade_single_attempt(
                 task_folder=str(task_folder),
                 client=client,
                 rubric_path=rubric_path,
+                template_path=agentic_template_path,
                 rubric_weight_path=rubric_weight_path,
                 model=model,
                 nocall=nocall,
@@ -611,9 +613,7 @@ def write_grading_to_db(conn, attempt, result, model, agentic=False):
             if result.get("context_reduced_details")
             else None
         ),
-        "agentic_mode": (
-            attempt.get("agent_model_type", "").lower() in ("agentic", "agent")
-        ),
+        "agentic_mode": agentic,
         "judge_version": JUDGE_VERSION,
     }
 
@@ -640,6 +640,14 @@ def main(args):
             load_env_var(
                 "JUDGE_PROMPT_TEMPLATE",
                 default="./prompts/judge_template_6_3.yaml",
+            )
+        )
+    )
+    agentic_template_path = str(
+        relative_path_from_project_root(
+            load_env_var(
+                "AGENTIC_JUDGE_PROMPT_TEMPLATE",
+                default="./prompts/agentic_judge_template_1.yaml",
             )
         )
     )
@@ -801,6 +809,7 @@ def main(args):
                 client=client,
                 rubric_path=rubric_path,
                 template_path=template_path,
+                agentic_template_path=agentic_template_path,
                 model=model,
                 scratch_run_dir=scratch_run_dir,
                 files_base_dir=args.files_base_dir,
