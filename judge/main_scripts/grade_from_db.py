@@ -17,6 +17,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -393,8 +394,13 @@ def setup_task_folder(attempt, scratch_run_dir, files_base_dir=None):
     attempt_id = attempt["attempt_id"]
     task_id = attempt["task_id"]
     task_name = attempt["task_name"] or f"task_{task_id}"
+    agent_model_name = attempt.get("agent_model_name") or "unknown"
+    safe_agent_model = re.sub(r"[^A-Za-z0-9._-]", "_", agent_model_name)
 
-    task_folder = scratch_run_dir / f"{task_name}__task_{task_id}__attempt_{attempt_id}"
+    task_folder = (
+        scratch_run_dir
+        / f"{task_name}__task_{task_id}__attempt_{attempt_id}__agent_model={safe_agent_model}"
+    )
     task_folder.mkdir(parents=True, exist_ok=True)
 
     # --- ai_attempt.xlsx from task_attempts.attempt_files ---
