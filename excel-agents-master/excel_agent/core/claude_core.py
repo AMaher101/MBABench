@@ -4,6 +4,7 @@ Claude by Anthropic core interaction logic.
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -146,62 +147,80 @@ class ClaudeCore(AIAgentCore):
         return None
 
     async def _find_web_search_button(self):
-        """Find the 'Search the web' <button> element across all frames.
+        """Find the 'Search the web' <button> in the Claude add-in frame.
 
-        Returns the actual <button> element (not an inner span), or None.
-        The button's className contains 'accent-secondary' when toggle is ON.
+        Scoped to the Claude iframe only (not every frame in the page).
+        The Plus popover is plain-styled — no ``role="menu"`` or
+        ``data-state`` — so the stablest anchor is the visible label.
+        Uses ``has-text`` (case-insensitive substring) which is fine here
+        because the popover only contains a handful of short-labeled
+        items and "Search the web" doesn't collide with any of them.
         """
-        for f in self.page.frames:
-            try:
-                buttons = await f.query_selector_all("button")
-                for btn in buttons:
-                    try:
-                        text = await btn.text_content()
-                        if text and "Search the web" in text.strip():
-                            if await btn.is_visible():
-                                return btn
-                    except Exception:
-                        continue
-            except Exception:
-                continue
+        frame = await self._get_claude_frame()
+        if not frame:
+            return None
+        try:
+            btn = await frame.query_selector('button:has-text("Search the web")')
+            if btn and await btn.is_visible():
+                return btn
+        except Exception:
+            pass
         return None
 
     async def _disable_web_search(self):
         """Disable 'Search the web' in the Claude add-in if it's enabled.
 
-        Opens the Plus (+) dropdown menu, finds the 'Search the web' <button>,
-        checks its CSS class for 'accent-secondary' (ON indicator), and clicks
-        to toggle OFF if needed. If already OFF, does nothing.
+        Opens the Plus (+) menu and reads the toggle state from the
+        "Search the web" button using two independent signals. ON when
+        either holds:
+          (a) className contains ``accent-secondary``. The add-in
+              currently ships ``text-accent-secondary-100`` when active,
+              and the substring match is forward-compatible with any
+              ``*accent-secondary*`` successor.
+          (b) the button contains 2+ ``<svg>`` descendants. OFF renders
+              just the leading icon; ON adds a trailing checkmark SVG.
+        Either signal alone is fragile (class names are Tailwind-ish
+        tokens; icon structure can change), but both breaking at once
+        would require a simultaneous visual + semantic redesign — much
+        less likely than either one in isolation.
         """
         try:
             logger.info("🔧 Checking 'Search the web' toggle...")
 
-            # Step 1: Get fresh Plus button reference and open dropdown
-            frame, plus_btn = await self._find_plus_button()
+            # Open the Plus menu.
+            _frame, plus_btn = await self._find_plus_button()
             if not plus_btn:
                 logger.debug("Could not find Plus button for web search check")
                 return
-
             await plus_btn.click()
-            await asyncio.sleep(1.0)
 
-            # Step 2: Find the actual <button> element (not a span inside it)
-            search_button = await self._find_web_search_button()
-            if not search_button:
-                await asyncio.sleep(1.0)
+            # Wait for the "Search the web" button to appear. The popover
+            # isn't Radix so there's no data-state=open to wait on; the
+            # button's visibility is itself the open signal. ~2s budget.
+            search_button = None
+            for _ in range(20):
+                await asyncio.sleep(0.1)
                 search_button = await self._find_web_search_button()
+                if search_button:
+                    break
 
             if not search_button:
-                logger.debug("'Search the web' button not found in dropdown")
+                logger.debug(
+                    "'Search the web' button did not appear after opening "
+                    "Plus menu — skipping"
+                )
                 await self.page.keyboard.press("Escape")
                 await asyncio.sleep(0.3)
                 return
 
-            # Step 3: Check the button's own className for accent-secondary (= ON)
+            # Read ON/OFF via the layered signal described above.
             is_enabled = await search_button.evaluate(
                 """el => {
                     const cls = el.className || '';
-                    return cls.includes('accent-secondary');
+                    if (cls.includes('accent-secondary')) return true;
+                    // ON state renders a checkmark SVG alongside the icon.
+                    if (el.querySelectorAll('svg').length >= 2) return true;
+                    return false;
                 }"""
             )
 
@@ -213,7 +232,6 @@ class ClaudeCore(AIAgentCore):
             else:
                 logger.info("✅ 'Search the web' is already disabled")
 
-            # Step 4: Close the dropdown
             await self.page.keyboard.press("Escape")
             await asyncio.sleep(0.3)
 
@@ -295,30 +313,31 @@ class ClaudeCore(AIAgentCore):
             logger.warning(f"❌ Health check failed: {e}")
             return False
 
-    # Valid model keywords for the Claude Excel add-in dropdown.
-    MODEL_KEYWORDS = {
-        "opus_4_6": "opus",
-        "sonnet_4_6": "sonnet",
-    }
-
     async def _select_model(self):
         """Select the configured Claude model via the add-in model dropdown.
 
-        Reads ``claude_excel_agent.model`` from config. If not set,
-        uses the current default. The dropdown button is at the bottom
-        of the chat panel showing e.g. "Opus 4.6 v".
+        Reads ``claude_excel_agent.model`` from config and matches it
+        (case-insensitive) against the selector button and dropdown menu
+        items. The value is whatever string the Claude add-in's UI shows
+        — e.g. "Opus 4.6", "Sonnet 4.6", or future models like "Opus 5.1".
+        No whitelist, so new models work without code changes.
+
+        Selector strategy (most to least stable):
+          * button:    ``button[aria-label="Model selector"]``
+          * menu:      ``[role="menu"][data-state="open"]`` linked back
+                       to the button via ``aria-labelledby="<button id>"``
+                       — catches silent click failures and avoids picking
+                       up an unrelated open menu.
+          * menu item: ``[role="menuitem"]`` inside that menu.
+
+        Leave ``model`` unset to keep the add-in's current default.
         """
         target = self.config.get("claude_excel_agent", {}).get("model")
         if not target:
             return
 
-        keyword = self.MODEL_KEYWORDS.get(target)
-        if not keyword:
-            logger.warning(
-                "Unknown Claude Excel model '%s'. Valid: %s. Using default.",
-                target,
-                ", ".join(self.MODEL_KEYWORDS.keys()),
-            )
+        target_lower = str(target).strip().lower()
+        if not target_lower:
             return
 
         try:
@@ -328,64 +347,97 @@ class ClaudeCore(AIAgentCore):
                 logger.warning("Claude frame not found — skipping model selection")
                 return
 
-            # Find the model selector button (shows current model name)
-            buttons = await frame.query_selector_all("button")
-            model_btn = None
-            for btn in buttons:
-                try:
-                    text = (await btn.text_content() or "").lower()
-                    if ("opus" in text or "sonnet" in text) and await btn.is_visible():
-                        model_btn = btn
-                        # Check if already on target
-                        if keyword in text:
-                            logger.info("Model '%s' already selected", keyword)
-                            return
-                        break
-                except Exception:
-                    continue
-
-            if not model_btn:
-                logger.warning("Model selector button not found — skipping")
+            # Anchor the button by its stable aria-label.
+            model_btn = await frame.query_selector(
+                'button[aria-label="Model selector"]'
+            )
+            if not model_btn or not await model_btn.is_visible():
+                logger.warning(
+                    "Model selector button not found (aria-label='Model selector')"
+                    " — skipping"
+                )
                 return
 
-            # Open dropdown
+            # Already on target? Button's title attribute is the exact
+            # model string ("Opus 4.7"); text_content as a fallback.
+            current = (await model_btn.get_attribute("title") or "").strip().lower()
+            if not current:
+                current = (await model_btn.text_content() or "").strip().lower()
+            if target_lower == current or target_lower in current:
+                logger.info("Model '%s' already selected", target)
+                return
+
+            # Remember the button's id so we can lock onto *its* popover
+            # (Radix links each menu's aria-labelledby to its trigger).
+            btn_id = await model_btn.get_attribute("id")
+
             await model_btn.click()
-            await asyncio.sleep(1.0)
 
-            # Find and click target model in dropdown
-            menu_items = await frame.query_selector_all(
-                '[role="menuitem"], [role="option"]'
-            )
-            for item in menu_items:
+            # Wait for the popover to open (~2s budget). Prefer the menu
+            # whose aria-labelledby points back to our trigger; fall back
+            # to any open menu.
+            menu = None
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                if btn_id:
+                    menu = await frame.query_selector(
+                        '[role="menu"][data-state="open"]'
+                        f'[aria-labelledby="{btn_id}"]'
+                    )
+                    if menu:
+                        break
+                menu = await frame.query_selector('[role="menu"][data-state="open"]')
+                if menu:
+                    break
+            if not menu:
+                logger.warning(
+                    "Model dropdown did not open (no [role=menu]"
+                    "[data-state=open] found) — skipping"
+                )
+                await self._dismiss_dropdown(frame)
+                return
+
+            # Scan items inside the opened menu only. Exact match on
+            # text_content first, then substring.
+            items = await menu.query_selector_all('[role="menuitem"]')
+            for item in items:
                 try:
-                    text = (await item.text_content() or "").lower()
-                    if keyword in text and await item.is_visible():
+                    if not await item.is_visible():
+                        continue
+                    text = (await item.text_content() or "").strip().lower()
+                    if text == target_lower:
                         await item.click()
-                        logger.info("Selected model '%s'", keyword)
+                        logger.info("Selected model '%s'", target)
                         await asyncio.sleep(0.5)
                         return
                 except Exception:
                     continue
-
-            # Fallback: scan all visible elements
-            all_els = await frame.query_selector_all("div, span, li")
-            for el in all_els:
+            for item in items:
                 try:
-                    text = (await el.text_content() or "").lower()
-                    if keyword in text and await el.is_visible():
-                        await el.click()
-                        logger.info("Selected model '%s' (fallback)", keyword)
+                    if not await item.is_visible():
+                        continue
+                    text = (await item.text_content() or "").strip().lower()
+                    if target_lower in text:
+                        await item.click()
+                        logger.info("Selected model '%s' (substring)", target)
                         await asyncio.sleep(0.5)
                         return
                 except Exception:
                     continue
 
-            logger.warning("Model '%s' not found in dropdown", keyword)
-            await frame.press("body", "Escape")
-            await asyncio.sleep(0.3)
+            logger.warning("Model '%s' not found in dropdown", target)
+            await self._dismiss_dropdown(frame)
 
         except Exception as e:
             logger.debug("Could not select model: %s", e)
+            await self._dismiss_dropdown(frame)
+
+    async def _dismiss_dropdown(self, frame):
+        """Press Escape to close any open popover; swallow any failure."""
+        try:
+            await frame.press("body", "Escape")
+            await asyncio.sleep(0.3)
+        except Exception:
             try:
                 await self.page.keyboard.press("Escape")
             except Exception:
@@ -413,92 +465,93 @@ class ClaudeCore(AIAgentCore):
             await frame.press("body", "Escape")
             await asyncio.sleep(1.5)
 
-            # Find the permission mode button in the bottom bar.
-            # When in "Ask before edits" mode, the span text is "Ask before edits".
-            # When already in "Accept all edits" mode, the span text is "Accept all edits".
-            # We need to check what mode we're in first.
-            mode_btn = None
-            current_mode = None
-
-            # Look for any span.font-small in the bottom bar — it shows the current mode
-            spans = await frame.query_selector_all("span.font-small")
-            for span in spans:
-                try:
-                    text = await span.text_content()
-                    if text and "edits" in text.strip().lower():
-                        mode_btn = span
-                        current_mode = text.strip()
-                        break
-                except Exception:
-                    continue
-
-            # Fallback selectors
+            # Find the permission-mode trigger button.
+            #
+            # Selector priority (most to least stable):
+            #   1. aria-label="Toggle permission mode" — stable a11y label
+            #   2. button:has-text("Ask before edits")  — current-mode text
+            #   3. button:has-text("Accept all edits")  — current-mode text
+            # We used to primarily hunt for `span.font-small` + text contains
+            # "edits"; that relied on both a hashed Tailwind class and loose
+            # substring matching and is now a last-resort fallback only.
+            mode_btn = await frame.query_selector(
+                'button[aria-label="Toggle permission mode"]'
+            )
             if not mode_btn:
                 mode_btn = await frame.query_selector(
                     'button:has-text("Ask before edits")'
                 )
-                if mode_btn:
-                    current_mode = "Ask before edits"
             if not mode_btn:
                 mode_btn = await frame.query_selector(
                     'button:has-text("Accept all edits")'
                 )
-                if mode_btn:
-                    current_mode = "Accept all edits"
-            if not mode_btn:
-                mode_btn = await frame.query_selector(
-                    '[aria-label="Toggle permission mode"]'
+
+            if not mode_btn or not await mode_btn.is_visible():
+                logger.info(
+                    "ℹ️ Permission mode button not found — assuming it's" " already set"
                 )
-
-            if not mode_btn:
-                logger.info("ℹ️ Permission mode button not found (may already be set)")
                 self._accepted_all_edits = True
                 return True
 
-            # If already in "Accept all edits" mode, no need to open the dropdown
-            if current_mode and "accept all" in current_mode.lower():
-                logger.info("✅ Already in 'Accept all edits' mode")
-                self._accepted_all_edits = True
-                return True
-
-            # Click to open the permission mode dropdown
+            # Quick early-exit: if the trigger button's own text already says
+            # "Accept all edits", we're there. Saves opening the dropdown.
             try:
-                parent = await mode_btn.evaluate_handle(
-                    'el => el.closest("button") || el.parentElement || el'
-                )
-                clickable = parent.as_element() or mode_btn
+                btn_text = (await mode_btn.text_content() or "").strip().lower()
+                if "accept all" in btn_text:
+                    logger.info("✅ Already in 'Accept all edits' mode")
+                    self._accepted_all_edits = True
+                    return True
             except Exception:
-                clickable = mode_btn
+                pass
 
-            await clickable.click()
+            # Open the permission-mode dropdown.
+            await mode_btn.click()
             logger.info("✅ Clicked permission mode button (opening dropdown)")
-            await asyncio.sleep(1.5)
 
-            # Now find "Accept all edits" in the dropdown
-            accept_btn = await frame.query_selector(
-                'div.text-text-200:has-text("Accept all edits")'
+            # The permission-mode popover is plain-styled (no Radix
+            # data-state), so we poll for the "Accept all edits" option
+            # to appear as our open-signal. ~2s budget.
+            accept_btn = None
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                accept_btn = await frame.query_selector(
+                    'button:has-text("Accept all edits")'
+                )
+                if accept_btn and await accept_btn.is_visible():
+                    break
+
+            if not accept_btn:
+                logger.warning("⚠️ 'Accept all edits' option did not appear in dropdown")
+                await frame.press("body", "Escape")
+                await asyncio.sleep(0.3)
+                return True  # non-fatal, let task continue
+
+            # Is 'Accept all edits' already selected? Selected state adds
+            # a trailing checkmark SVG wrapped in a div with class
+            # `text-accent-secondary-100` (Claude's "active" accent token).
+            # Layered signal — any of:
+            #   (a) button's own class contains 'accent-secondary'
+            #   (b) a descendant has class containing 'accent-secondary'
+            #   (c) button has 2+ SVG descendants (icon + checkmark).
+            # Any one alone is fragile; all three breaking at once would
+            # require a coordinated visual + semantic redesign.
+            already_selected = await accept_btn.evaluate(
+                """el => {
+                    if ((el.className || '').includes('accent-secondary')) return true;
+                    if (el.querySelector('[class*="accent-secondary"]')) return true;
+                    if (el.querySelectorAll('svg').length >= 2) return true;
+                    return false;
+                }"""
             )
-            if not accept_btn:
-                accept_btn = await frame.query_selector('div:text("Accept all edits")')
-            if not accept_btn:
-                # Try finding by exact text
-                divs = await frame.query_selector_all("div")
-                for div in divs:
-                    try:
-                        text = await div.text_content()
-                        if text and text.strip() == "Accept all edits":
-                            accept_btn = div
-                            break
-                    except Exception:
-                        continue
 
-            if accept_btn:
+            if already_selected:
+                logger.info("✅ 'Accept all edits' already selected")
+                self._accepted_all_edits = True
+            else:
                 await accept_btn.click()
                 logger.info("✅ Clicked 'Accept all edits'")
                 self._accepted_all_edits = True
                 await asyncio.sleep(0.5)
-            else:
-                logger.warning("⚠️ 'Accept all edits' not found in dropdown")
 
             # Always dismiss the dropdown after we're done
             await frame.press("body", "Escape")
@@ -957,99 +1010,162 @@ class ClaudeCore(AIAgentCore):
         return False
 
     async def _find_plus_button(self):
-        """Find the Plus (+) button in the Claude frame. Returns (frame, element) or (None, None)."""
-        for f in self.page.frames:
-            try:
-                for svg in await f.query_selector_all("svg"):
-                    title_el = await svg.query_selector("title")
-                    if title_el:
-                        title_text = await title_el.text_content()
-                        if title_text and title_text.strip() == "Plus":
-                            # Get the clickable button ancestor, not just parentElement
-                            btn = await svg.evaluate_handle(
-                                """el => {
-                                let node = el;
-                                for (let i = 0; i < 5 && node; i++) {
-                                    if (node.tagName === 'BUTTON' || node.getAttribute('role') === 'button') {
-                                        return node;
-                                    }
-                                    node = node.parentElement;
-                                }
-                                // Fallback: return direct parent
-                                return el.parentElement;
-                            }"""
-                            )
-                            btn_el = btn.as_element() or svg
-                            return f, btn_el
-            except Exception:
-                continue
-        return None, None
+        """Find the composer "+" trigger that opens the attach popover.
 
-    async def _find_menu_item(self, text: str):
-        """Search ALL frames for a menu item with the given text. Returns element or None."""
-        for f in self.page.frames:
-            try:
-                # Try exact span match
-                el = await f.query_selector(f'span:text-is("{text}")')
-                if el and await el.is_visible():
-                    return el
+        Returns ``(frame, button)`` or ``(None, None)``.
 
-                # Try button containing the text
-                el = await f.query_selector(f'button:has-text("{text}")')
-                if el and await el.is_visible():
-                    return el
+        The Claude panel ships **two** buttons with ``aria-label="More options"``:
+        the attach ``+`` next to the composer, and the header ``⋮`` three-dot
+        menu. They are distinguished by their inner SVG icon — the attach
+        button's SVG contains ``<title>Plus</title>`` (semantic a11y label
+        for the glyph), the three-dot menu does not. ``query_selector`` with
+        only the aria-label returns the first document-order match (which is
+        the header ``⋮``) and silently clicks the wrong control, so we
+        require the Plus SVG title as part of the selector.
+        """
+        frame = await self._get_claude_frame()
+        if not frame:
+            return None, None
 
-                # Try any element with exact text
-                el = await f.query_selector(f':text-is("{text}")')
-                if el and await el.is_visible():
-                    return el
-            except Exception:
-                continue
-
-        # Also check main page
+        # Primary: SVG <title>Plus</title> uniquely marks the attach button.
         try:
-            el = await self.page.query_selector(f'span:text-is("{text}")')
-            if el and await el.is_visible():
-                return el
+            btn = await frame.query_selector(
+                'button[aria-label="More options"]:has(svg > title:text-is("Plus"))'
+            )
+            if btn and await btn.is_visible():
+                return frame, btn
         except Exception:
             pass
 
+        # Fallback: match by the Plus glyph's SVG path data (d attribute
+        # starts with "M224,128..."), in case the <title> element is removed.
+        try:
+            btn = await frame.query_selector(
+                'button[aria-label="More options"]:has(svg path[d^="M224,128"])'
+            )
+            if btn and await btn.is_visible():
+                return frame, btn
+        except Exception:
+            pass
+
+        return None, None
+
+    async def _find_menu_item(self, text: str):
+        """Search all frames + main page for a menu item with the given text.
+
+        Primary strategy is ``get_by_role("menuitem", name=...)`` — Playwright's
+        accessible-name computation walks nested icon/label structure and
+        normalizes whitespace, so it matches the real DOM shape that Anthropic
+        ships (``<div role="menuitem"><svg/><span>Add files or photos</span></div>``).
+        CSS ``:text-is`` / ``:has-text`` selectors stay as fallbacks.
+
+        Returns an element handle or ``None``.
+        """
+        name_re = re.compile(re.escape(text), re.I)
+
+        contexts = list(self.page.frames) + [self.page]
+        for ctx in contexts:
+            # Primary: ARIA role + accessible name.
+            try:
+                loc = ctx.get_by_role("menuitem", name=name_re).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return await loc.element_handle()
+            except Exception:
+                pass
+
+            # Fallback 1: role=menuitem with substring text match (in case
+            # accessible name is empty but visible text is present).
+            try:
+                el = await ctx.query_selector(f'[role="menuitem"]:has-text("{text}")')
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                pass
+
+            # Fallback 2: original CSS-text strategies.
+            try:
+                el = await ctx.query_selector(f'span:text-is("{text}")')
+                if el and await el.is_visible():
+                    return el
+
+                el = await ctx.query_selector(f'button:has-text("{text}")')
+                if el and await el.is_visible():
+                    return el
+
+                el = await ctx.query_selector(f':text-is("{text}")')
+                if el and await el.is_visible():
+                    return el
+            except Exception:
+                continue
+
         return None
 
-    async def _open_plus_menu_and_find(self, target_text: str, max_retries: int = 3):
-        """Click Plus button and find a menu item. Retries with fresh references.
+    async def _plus_menu_is_open(self) -> bool:
+        """Return True if the Plus popover is currently showing any menuitem.
 
-        Returns (menu_item_element) or None.
+        Used to avoid the toggle trap: if an earlier setup step
+        (``_disable_web_search``) left the menu open, clicking Plus again
+        would close it instead of opening it.
+        """
+        for ctx in list(self.page.frames) + [self.page]:
+            try:
+                el = await ctx.query_selector('[role="menuitem"]')
+                if el and await el.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _open_plus_menu_and_find(self, target_text: str, max_retries: int = 3):
+        """Open the Plus popover (if not already open) and return a menu item.
+
+        Handles the toggle trap: if the popover is already on screen from an
+        earlier setup step (e.g. ``_disable_web_search``), clicking Plus again
+        would close it. We search first, and only click Plus when the menu is
+        confirmed closed.
+
+        Returns the menu item element handle, or ``None`` after ``max_retries``.
         """
         for attempt in range(max_retries):
-            # Always get a FRESH Plus button reference
+            # If a prior step left the popover open, search directly — no click.
+            if await self._plus_menu_is_open():
+                menu_item = await self._find_menu_item(target_text)
+                if menu_item:
+                    return menu_item
+                # Menu is open but item isn't there. Dismiss and fall through
+                # to click Plus fresh on the same attempt.
+                try:
+                    await self.page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+
             frame, plus_btn = await self._find_plus_button()
             if not plus_btn:
                 logger.error("❌ Could not find Plus button")
                 return None
 
-            # Click Plus to open dropdown
             await plus_btn.click()
             await asyncio.sleep(1.0)
 
-            # Verify dropdown opened by looking for ANY known menu item
             menu_item = await self._find_menu_item(target_text)
             if menu_item:
                 return menu_item
 
-            # Dropdown might not have opened. Try longer wait.
+            # Give the popover a beat longer in case of animation.
             await asyncio.sleep(1.0)
             menu_item = await self._find_menu_item(target_text)
             if menu_item:
                 return menu_item
 
-            # Still not found. Log what IS visible and try to close/retry.
             logger.warning(
                 f"⚠️ '{target_text}' not found on attempt {attempt + 1}/{max_retries}"
             )
 
-            # Debug: dump visible text in ALL frames
+            # On the final attempt, capture a full screenshot + DOM dump so we
+            # can see what the add-in is actually rendering.
             if attempt == max_retries - 1:
+                await self._dump_upload_dom("claude_plus_menu")
                 for f in self.page.frames:
                     try:
                         spans = await f.query_selector_all("span")
@@ -1063,7 +1179,6 @@ class ClaudeCore(AIAgentCore):
                     except Exception:
                         continue
 
-            # Close any open menu and retry
             try:
                 if frame:
                     await frame.press("body", "Escape")
@@ -1101,18 +1216,36 @@ class ClaudeCore(AIAgentCore):
                 p = Path(fp)
                 logger.info(f"📤 Uploading {i + 1}/{len(file_paths)}: {p.name}")
 
-                # Fresh lookup and click on every file upload
+                uploaded = False
                 menu = await self._open_plus_menu_and_find("Add files or photos")
-                if not menu:
-                    logger.error("❌ 'Add files or photos' not found after retries")
-                    return False
+                if menu:
+                    logger.info("✅ Found 'Add files or photos' — clicking...")
+                    try:
+                        async with self.page.expect_file_chooser(timeout=8000) as fc:
+                            await menu.click()
+                        chooser = await fc.value
+                        await chooser.set_files([fp])
+                        logger.info(f"   ✅ Selected: {p.name}")
+                        uploaded = True
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ File chooser did not fire after menu click: {e}"
+                        )
 
-                logger.info("✅ Found 'Add files or photos' — clicking...")
-                async with self.page.expect_file_chooser(timeout=5000) as fc:
-                    await menu.click()
-                chooser = await fc.value
-                await chooser.set_files([fp])
-                logger.info(f"   ✅ Selected: {p.name}")
+                # Fallback: some React chat UIs keep a hidden <input type="file">
+                # that the visible "+" proxies to. Driving it directly bypasses
+                # the native chooser entirely.
+                if not uploaded:
+                    if await self._set_files_on_hidden_input(fp):
+                        logger.info(
+                            f"   ✅ Selected via hidden input fallback: {p.name}"
+                        )
+                        uploaded = True
+
+                if not uploaded:
+                    logger.error("❌ 'Add files or photos' not found after retries")
+                    await self._dump_upload_dom("claude_upload_failed")
+                    return False
 
                 await asyncio.sleep(min(5 + p.stat().st_size / 1024 / 100, 30))
 
@@ -1124,4 +1257,24 @@ class ClaudeCore(AIAgentCore):
             import traceback
 
             logger.error(traceback.format_exc())
+            await self._dump_upload_dom("claude_upload_exception")
             return False
+
+    async def _set_files_on_hidden_input(self, file_path) -> bool:
+        """Find any visible-or-hidden ``<input type="file">`` and set files on it.
+
+        Returns True on success. Used as a last-resort fallback when the
+        menuitem-click path fails to open a file chooser.
+        """
+        for ctx in list(self.page.frames) + [self.page]:
+            try:
+                inputs = await ctx.query_selector_all('input[type="file"]')
+            except Exception:
+                continue
+            for inp in inputs:
+                try:
+                    await inp.set_input_files([str(file_path)])
+                    return True
+                except Exception:
+                    continue
+        return False

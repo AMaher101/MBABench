@@ -1,0 +1,38 @@
+# Missing v8 runs — chatgpt_excel_agent, ModelOff (31 tasks)
+# Non-deprecated modeloff tasks with NO chatgpt_excel_agent prompt_version=8 attempt in BizbenchV1.
+# Generated 2026-04-21 from Neon DB coverage query.
+
+task_source: "modeloff"
+
+tasks:
+  - "MO13 Finals - Sec 1 - Toll Road Operator"
+  - "MO13 Finals - Sec 2 - Dashboard"
+  - "MO13 Round 1 - Sec 2 - Acquisition Financing (Debt)"
+  - "MO13 Round 1 - Sec 3 - Financial Statement"
+  - "MO13 Round 1 - Sec 4 - Energy"
+  - "MO13 Round 2 - Sec 2 - Mergers and Acquisitions"
+  - "MO13 Round 2 - Sec 3 - Hard Times"
+  - "MO13 Round 2 - Sec 4 - Data Analysis"
+  - "MO14 Round 1 - Sec 2 - Precice Debt Modeling"
+  - "MO14 Round 1 - Sec 3 - Dealing With Data"
+  - "MO14 Round 2 - Sec 2 - Time is Money"
+  - "MO14 Round 2 - Sec 3 - Stepping Up"
+  - "MO14 Round 2 - Sec 4 - Purple City"
+  - "MO15 Finals - Sec 1"
+  - "MO15 Finals - Sec 3"
+  - "MO15 Round 1 - Sec 2 - Bread and Butter"
+  - "MO15 Round 1 - Sec 3 - Tax"
+  - "MO15 Round 1 - Sec 4 - Options to Call"
+  - "MO16 Finals - Sec 1 People Power"
+  - "MO16 Finals - Sec 3 - The 500"
+  - "MO16 Finals - Sec 4 - Cakes and Onions"
+  - "MO16 Round 1 - Sec 2 - Chip Off the Old Block"
+  - "MO16 Round 1 - Sec 4 - Going Around in Circles"
+  - "MO16 Round 2 - Sec 2 - Fund the Future"
+  - "MO16 Round 2 - Sec 3 - Tally Up"
+  - "MO16 Round 2 - Sec 4 - Maximize the Benefit"
+  - "MO17 Finals - Sec 2 - Funding Fun"
+  - "MO17 Round 1 - Sec 2 - Castles in the Air"
+  - "MO17 Round 1 - Sec 3 - When it Rains It Pours"
+  - "MO17 Round 1 - Sec 4 - Go With The Flow"
+  - "MO17 Round 2 - Sec 1 - Collect the Cash"

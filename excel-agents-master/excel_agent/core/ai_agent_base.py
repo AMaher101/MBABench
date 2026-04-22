@@ -585,6 +585,97 @@ class AIAgentCore(ABC):
 
         return await upload_pdf_via_tabai(self.page, file_paths)
 
+    async def _dump_upload_dom(self, label: str) -> None:
+        """Best-effort diagnostic dump when a file upload path fails.
+
+        Writes ``upload_dumps/upload_dump_<label>_<ts>.png`` (screenshot)
+        and ``.json`` (visible role/aria/testid/text of elements in the
+        main page, every iframe, and any Fluent ``ms-Layer`` overlay).
+        Never raises — purely diagnostic so we can see what the add-in
+        UI actually looks like when a selector misses.
+        """
+        try:
+            import json
+            from datetime import datetime
+            from pathlib import Path
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path("upload_dumps")
+            try:
+                out_dir.mkdir(exist_ok=True)
+            except Exception:
+                pass
+            stem = out_dir / f"upload_dump_{label}_{ts}"
+
+            try:
+                await self.page.screenshot(path=str(stem) + ".png", full_page=False)
+            except Exception as e:
+                logger.debug(f"dump screenshot failed: {e}")
+
+            js = r"""
+            () => {
+                const roots = [document.body, ...document.querySelectorAll(
+                    '.ms-Layer, .ms-Layer-content, [class*="Layer-content"]'
+                )];
+                const seen = new Set();
+                const nodes = [];
+                for (const root of roots) {
+                    if (!root) continue;
+                    try {
+                        root.querySelectorAll(
+                            '[role], [aria-label], [data-testid], button, [class*="menu-item" i]'
+                        ).forEach(el => {
+                            if (seen.has(el)) return;
+                            seen.add(el);
+                            const r = el.getBoundingClientRect();
+                            if (r.width === 0 || r.height === 0) return;
+                            const st = window.getComputedStyle(el);
+                            if (st.visibility === 'hidden' || st.display === 'none') return;
+                            const text = (el.textContent || '').trim().slice(0, 120);
+                            nodes.push({
+                                tag: el.tagName.toLowerCase(),
+                                role: el.getAttribute('role') || '',
+                                aria: el.getAttribute('aria-label') || '',
+                                testid: el.getAttribute('data-testid') || '',
+                                text: text,
+                            });
+                        });
+                    } catch (e) {}
+                }
+                return nodes.slice(0, 400);
+            }
+            """
+
+            dump = {"frames": []}
+            try:
+                main = await self.page.evaluate(js)
+                dump["frames"].append(
+                    {"frame": "__main__", "url": self.page.url, "nodes": main}
+                )
+            except Exception as e:
+                logger.debug(f"dump main evaluate failed: {e}")
+
+            for frame in self.page.frames:
+                try:
+                    nodes = await frame.evaluate(js)
+                    dump["frames"].append(
+                        {
+                            "frame": frame.name or "",
+                            "url": (frame.url or "")[:200],
+                            "nodes": nodes,
+                        }
+                    )
+                except Exception:
+                    continue
+
+            try:
+                Path(str(stem) + ".json").write_text(json.dumps(dump, indent=2))
+                logger.error(f"📸 Upload DOM dump written: {stem}.png + {stem}.json")
+            except Exception as e:
+                logger.debug(f"dump write failed: {e}")
+        except Exception as e:
+            logger.debug(f"_dump_upload_dom outer failure: {e}")
+
     async def _verify_panel_opened(self) -> bool:
         """
         Verify that the AI agent panel has opened by checking for input field.

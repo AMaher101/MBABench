@@ -7,6 +7,7 @@ Mirrors the structure of claude_core.py with ChatGPT selectors and UI flow.
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -160,11 +161,15 @@ class ChatGPTCore(AIAgentCore):
         return False
 
     # ------------------------------------------------------------------
-    # Initial setup: Heavy mode + Apply edits automatically
+    # Initial setup: Thinking effort + Apply edits automatically
+    #
+    # Both are config-driven. If the corresponding key under
+    # `chatgpt_excel_agent:` in the template is unset, the UI is left
+    # alone. No hardcoded model / mode / toggle names.
     # ------------------------------------------------------------------
 
     async def handle_initial_setup(self) -> bool:
-        """Select 'Heavy' mode and enable 'Apply edits automatically'."""
+        """Run configured post-panel-open setup steps."""
         if self._setup_completed:
             return True
 
@@ -175,11 +180,8 @@ class ChatGPTCore(AIAgentCore):
                 logger.warning("⚠️ Could not find ChatGPT frame for setup")
                 return False
 
-            # Step 1: Select Heavy mode
-            await self._select_reasoning_mode(frame)
-
-            # Step 2: Enable "Apply edits automatically"
-            await self._enable_auto_apply_edits(frame)
+            await self._select_thinking_effort(frame)
+            await self._apply_edits_toggle(frame)
 
             self._setup_completed = True
             logger.info("✅ ChatGPT initial setup complete")
@@ -196,129 +198,173 @@ class ChatGPTCore(AIAgentCore):
                 pass
             return False
 
-    # Valid reasoning modes for the ChatGPT Excel add-in dropdown.
-    VALID_MODES = {"fast", "standard", "heavy"}
+    async def _select_thinking_effort(self, frame):
+        """Pin the 'Thinking effort' pill to the configured value.
 
-    async def _select_reasoning_mode(self, frame):
-        """Select the configured reasoning mode (Fast / Standard / Heavy).
+        Reads ``chatgpt_excel_agent.thinking_effort`` from config and matches
+        it case-insensitively against the pill's aria-label and the dropdown
+        menu items. No whitelist — any current or future label works
+        (Fast / Standard / Heavy / …). Leave unset to skip.
 
-        Reads ``chatgpt_excel_agent.model`` from config. Defaults to
-        ``heavy`` if not set. The dropdown shows three options with a
-        truncated span indicator.
+        Selector strategy (most to least stable):
+          * pill:      ``button#reasoning-effort-select``
+                       (fallback: ``aria-label^="Thinking effort"``)
+          * menu root: ``[role="menu"][data-state="open"]`` — Radix emits
+                       ``data-state`` so we can verify the dropdown opened
+                       before scanning (catches silent click failures).
+          * menu item: ``[role="menuitem"]`` inside the menu root.
+          * item label: ``span.truncate`` within each item — the primary
+                       label ("Fast"/"Heavy"/…). Much safer than
+                       text_content, which also includes the description.
         """
-        target = self.config.get("chatgpt_excel_agent", {}).get("model") or "heavy"
-        target_lower = target.lower()
+        target = self.config.get("chatgpt_excel_agent", {}).get("thinking_effort")
+        if not target:
+            return
 
-        if target_lower not in self.VALID_MODES:
-            logger.warning(
-                "Unknown ChatGPT Excel mode '%s'. "
-                "Valid options: %s. Defaulting to 'heavy'.",
-                target,
-                ", ".join(sorted(self.VALID_MODES)),
-            )
-            target_lower = "heavy"
-
-        # Capitalise for UI matching ("fast" -> "Fast")
-        target_display = target_lower.capitalize()
+        target_lower = str(target).strip().lower()
+        if not target_lower:
+            return
 
         try:
-            logger.info("Checking reasoning mode...")
+            logger.info("Selecting Thinking effort: %s", target)
 
-            # Find the current mode indicator — a span with class containing
-            # "max-w-40" and "truncate" showing Fast / Standard / Heavy.
-            current_mode = None
-            mode_button = None
-
-            # Strategy 1: find span.truncate whose text is one of the modes
-            spans = await frame.query_selector_all("span")
-            for span in spans:
-                try:
-                    text = (await span.text_content() or "").strip()
-                    if text in ("Fast", "Standard", "Heavy"):
-                        cls = await span.get_attribute("class") or ""
-                        # The mode indicator has max-w-40 truncate classes
-                        if "truncate" in cls:
-                            current_mode = text
-                            # Navigate up to the clickable button/dropdown trigger
-                            mode_button = await span.evaluate_handle(
-                                'el => el.closest("button") || el.parentElement'
-                            )
-                            break
-                except Exception:
-                    continue
-
-            if current_mode and current_mode.lower() == target_lower:
-                logger.info("Already in '%s' mode", target_display)
+            # Locate the pill.
+            pill = await frame.query_selector("button#reasoning-effort-select")
+            if not pill:
+                pill = await frame.query_selector(
+                    'button[aria-label^="Thinking effort"]'
+                )
+            if not pill or not await pill.is_visible():
+                logger.warning(
+                    "Thinking-effort pill not found (id='reasoning-effort-select',"
+                    ' aria-label^="Thinking effort") — skipping'
+                )
                 return
 
-            if not mode_button:
-                logger.warning("Mode selector not found — skipping")
+            # Already on target? aria-label shape: "Thinking effort: Heavy".
+            aria = (await pill.get_attribute("aria-label") or "").strip()
+            current = aria.rsplit(":", 1)[-1].strip() if ":" in aria else ""
+            if not current:
+                current = (await pill.text_content() or "").strip()
+            current_lower = current.lower()
+            if current_lower == target_lower or target_lower in current_lower:
+                logger.info("Thinking effort '%s' already selected", target)
                 return
 
-            logger.info(
-                "Current mode: '%s' — switching to '%s'...",
-                current_mode,
-                target_display,
-            )
+            await pill.click()
 
-            # Click to open mode dropdown
-            clickable = mode_button.as_element() or mode_button
-            await clickable.click()
-            await asyncio.sleep(1.0)
+            # Wait for the Radix menu to open (up to ~2s). Using
+            # data-state="open" gives a loud, specific open signal so
+            # we don't misdiagnose "menu didn't open" as "item missing".
+            menu = None
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                menu = await frame.query_selector('[role="menu"][data-state="open"]')
+                if menu:
+                    break
+            if not menu:
+                logger.warning(
+                    "Thinking-effort menu did not open (no [role=menu]"
+                    "[data-state=open] found) — skipping"
+                )
+                await self._dismiss_dropdown(frame)
+                return
 
-            # Find target menu item (role="menuitem" containing target text)
-            mode_clicked = False
-            menu_items = await frame.query_selector_all('[role="menuitem"]')
-            for item in menu_items:
+            # Scan items inside this menu only.
+            items = await menu.query_selector_all('[role="menuitem"]')
+            for item in items:
                 try:
-                    text = (await item.text_content() or "").strip()
-                    if target_lower in text.lower():
+                    if not await item.is_visible():
+                        continue
+                    # Primary: the short label ("Fast" / "Heavy" / …). The
+                    # label is the sole `span.truncate` inside the item —
+                    # the description sibling uses different utilities.
+                    label_el = await item.query_selector("span.truncate")
+                    label = (
+                        ((await label_el.text_content()) if label_el else "")
+                        .strip()
+                        .lower()
+                    )
+                    # Exact label match first; fall back to substring on
+                    # label; absolute last resort, substring on full text.
+                    if label == target_lower:
                         await item.click()
-                        mode_clicked = True
-                        logger.info("Selected '%s' mode", target_display)
-                        break
+                        logger.info("Selected Thinking effort '%s'", target)
+                        await asyncio.sleep(0.5)
+                        return
+                    if label and target_lower in label:
+                        await item.click()
+                        logger.info(
+                            "Selected Thinking effort '%s' (label substring)",
+                            target,
+                        )
+                        await asyncio.sleep(0.5)
+                        return
                 except Exception:
                     continue
 
-            if not mode_clicked:
-                # Fallback: click span with exact text
-                span = await frame.query_selector(f'span:text-is("{target_display}")')
-                if span:
-                    await span.click()
-                    logger.info("Selected '%s' mode (via span)", target_display)
-                else:
-                    logger.warning("'%s' option not found in dropdown", target_display)
+            # Fall through — last-resort full-text substring pass.
+            for item in items:
+                try:
+                    if not await item.is_visible():
+                        continue
+                    full = (await item.text_content() or "").strip().lower()
+                    if target_lower in full:
+                        await item.click()
+                        logger.info(
+                            "Selected Thinking effort '%s' (full-text fallback)",
+                            target,
+                        )
+                        await asyncio.sleep(0.5)
+                        return
+                except Exception:
+                    continue
 
-            await asyncio.sleep(0.5)
-
-            # Dismiss dropdown
-            try:
-                await frame.press("body", "Escape")
-                await asyncio.sleep(0.3)
-            except Exception:
-                pass
+            logger.warning("Thinking effort '%s' not found in dropdown", target)
+            await self._dismiss_dropdown(frame)
 
         except Exception as e:
-            logger.debug("Could not set reasoning mode: %s", e)
-            try:
-                await frame.press("body", "Escape")
-                await asyncio.sleep(0.3)
-            except Exception:
-                pass
+            logger.debug("Could not set thinking effort: %s", e)
+            await self._dismiss_dropdown(frame)
+
+    async def _dismiss_dropdown(self, frame):
+        """Press Escape to close any open popover; swallow any failure."""
+        try:
+            await frame.press("body", "Escape")
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
 
     async def _find_settings_button(self, frame):
-        """Find the three-dot settings/menu button in the ChatGPT frame.
+        """Find the "…" settings / kebab menu button in the ChatGPT frame.
 
-        The button contains an SVG with a path drawing three horizontal dots:
-        M3 12a2 2 0 1 1 4 0 ... M10 12a2 2 0 1 1 4 0 ... M17 12a2 2 0 1 1 4 0 ...
+        Selectors, ordered from most to least robust:
+
+          1. Exact aria-label "Open settings menu" — the label ChatGPT
+             currently ships (stable, human-facing, designed for a11y).
+          2. aria-haspopup="menu" combined with aria-label containing
+             settings/options/menu/more — catches future label variants
+             while still constraining to popup-triggers.
+          3. aria-label substring fallback (no haspopup constraint).
+
+        The old SVG-path heuristic was retired once we had the stable
+        aria-label; keeping only attribute-based matches.
         """
-        # Strategy 1: aria-label
-        for sel in [
+        selectors = [
+            # Exact label we've confirmed in the current UI.
+            'button[aria-label="Open settings menu"]',
+            # Popup-opener + descriptive label (resilient to label tweaks).
+            'button[aria-haspopup="menu"][aria-label*="settings" i]',
+            'button[aria-haspopup="menu"][aria-label*="option" i]',
+            'button[aria-haspopup="menu"][aria-label*="menu" i]',
+            'button[aria-haspopup="menu"][aria-label*="more" i]',
+            # Bare aria-label substring (last resort — may match unrelated
+            # buttons, but still far more principled than SVG sniffing).
             'button[aria-label*="settings" i]',
             'button[aria-label*="option" i]',
-            'button[aria-label*="menu" i]',
             'button[aria-label*="more" i]',
-        ]:
+        ]
+        for sel in selectors:
             try:
                 btn = await frame.query_selector(sel)
                 if btn and await btn.is_visible():
@@ -326,116 +372,156 @@ class ChatGPTCore(AIAgentCore):
             except Exception:
                 continue
 
-        # Strategy 2: find button whose SVG path contains the three-dot signature
-        try:
-            buttons = await frame.query_selector_all("button")
-            for btn in buttons:
-                try:
-                    if not await btn.is_visible():
-                        continue
-                    svg = await btn.query_selector("svg")
-                    if not svg:
-                        continue
-                    path_el = await svg.query_selector("path")
-                    if not path_el:
-                        continue
-                    d_attr = await path_el.get_attribute("d") or ""
-                    # The three-dot icon has pattern: M3 12...M10 12...M17 12
-                    if "M3 12" in d_attr and "M10 12" in d_attr and "M17 12" in d_attr:
-                        return btn
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
         return None
 
-    async def _enable_auto_apply_edits(self, frame):
-        """Open settings and enable 'Apply edits automatically' if OFF."""
-        try:
-            logger.info("🔧 Checking 'Apply edits automatically' toggle...")
+    async def _apply_edits_toggle(self, frame):
+        """Set the 'Apply edits automatically' switch to the configured value.
 
-            # Find and click the three-dot settings button
+        Reads ``chatgpt_excel_agent.apply_edits_automatically`` from config:
+          * ``True``  → ensure toggle is ON
+          * ``False`` → ensure toggle is OFF
+          * unset / non-bool → skip, leave the UI alone
+
+        Selector chain (most to least robust):
+          * settings trigger: ``_find_settings_button`` (aria-label anchored)
+          * popover:          ``[role="menu"][data-state="open"]`` whose
+                              ``aria-labelledby`` matches the trigger's id
+                              (Radix links each popover back to its opener)
+          * switch:           ``<label>`` with text "Apply edits automatically"
+                              → ``for`` attr → ``[id=<for>]`` inside popover
+                              (fallback: the only ``button[role="switch"]``
+                              inside the popover)
+        """
+        desired = self.config.get("chatgpt_excel_agent", {}).get(
+            "apply_edits_automatically"
+        )
+        if not isinstance(desired, bool):
+            return
+
+        try:
+            logger.info("Setting 'Apply edits automatically': desired=%s", desired)
+
+            # Locate the "…" settings trigger, across all frames if needed.
             settings_btn = await self._find_settings_button(frame)
+            trigger_frame = frame
             if not settings_btn:
-                # Also search across all frames
                 for f in self.page.frames:
                     settings_btn = await self._find_settings_button(f)
                     if settings_btn:
+                        trigger_frame = f
                         break
-
             if not settings_btn:
                 logger.warning(
-                    "⚠️ Settings button not found — skipping auto-apply check"
+                    "Settings (…) button not found — cannot set apply-edits toggle"
                 )
                 return
 
-            await settings_btn.click()
-            await asyncio.sleep(1.0)
+            # Remember the trigger's id so we can match the specific popover
+            # this button opens (Radix wires aria-labelledby = trigger id).
+            trigger_id = await settings_btn.get_attribute("id")
 
-            # Find the toggle switch for "Apply edits automatically"
-            # Strategy 1: find by label text, then the associated switch
+            await settings_btn.click()
+
+            # Wait for the popover. Prefer the one aria-labelledby the
+            # trigger; fall back to any open menu. ~2s budget.
+            popover = None
+            popover_frame = trigger_frame
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                candidates = []
+                for f in [trigger_frame] + list(self.page.frames):
+                    try:
+                        if trigger_id:
+                            el = await f.query_selector(
+                                '[role="menu"][data-state="open"]'
+                                f'[aria-labelledby="{trigger_id}"]'
+                            )
+                            if el:
+                                candidates.append((el, f))
+                        if not candidates:
+                            el = await f.query_selector(
+                                '[role="menu"][data-state="open"]'
+                            )
+                            if el:
+                                candidates.append((el, f))
+                    except Exception:
+                        continue
+                if candidates:
+                    popover, popover_frame = candidates[0]
+                    break
+
+            if not popover:
+                logger.warning(
+                    "Settings popover did not open (no [role=menu]"
+                    "[data-state=open] found) — skipping"
+                )
+                await self._dismiss_dropdown(frame)
+                return
+
+            # Find the switch, scoped to the popover.
             switch = None
-            for f in [frame] + self.page.frames:
+            labels = await popover.query_selector_all("label")
+            for label in labels:
                 try:
-                    labels = await f.query_selector_all("label")
-                    for label in labels:
-                        try:
-                            text = (await label.text_content() or "").strip()
-                            if "Apply edits automatically" in text:
-                                label_for = await label.get_attribute("for")
-                                if label_for:
-                                    switch = await f.query_selector(
-                                        f'button[id="{label_for}"]'
-                                    )
-                                if not switch:
-                                    # Try finding sibling/nearby switch
-                                    switch = await f.query_selector(
-                                        'button[role="switch"]'
-                                    )
-                                break
-                        except Exception:
-                            continue
-                    if switch:
-                        break
+                    text = (await label.text_content() or "").strip()
+                    if "Apply edits automatically" not in text:
+                        continue
+                    label_for = await label.get_attribute("for")
+                    if label_for:
+                        # Attribute selectors with colons in the value (Radix
+                        # ids like ":r2f:") work fine when double-quoted.
+                        switch = await popover.query_selector(f'[id="{label_for}"]')
+                    break
                 except Exception:
                     continue
 
-            # Strategy 2: just find any role="switch" if label approach fails
             if not switch:
-                for f in [frame] + self.page.frames:
-                    try:
-                        switch = await f.query_selector('button[role="switch"]')
-                        if switch and await switch.is_visible():
-                            break
-                        switch = None
-                    except Exception:
-                        continue
+                # Fallback: the sole role=switch inside the popover.
+                switch = await popover.query_selector('button[role="switch"]')
 
-            if switch:
-                state = await switch.get_attribute("data-state")
-                aria_checked = await switch.get_attribute("aria-checked")
+            if not switch:
+                logger.warning(
+                    "'Apply edits automatically' toggle not found in popover"
+                )
+                await self._dismiss_dropdown(frame)
+                return
 
-                if state == "unchecked" or aria_checked == "false":
-                    await switch.click()
-                    await asyncio.sleep(0.5)
-                    logger.info("✅ Enabled 'Apply edits automatically'")
-                else:
-                    logger.info("✅ 'Apply edits automatically' is already ON")
+            # Read current state. data-state and aria-checked track the
+            # same fact; check both so we're insensitive to which one
+            # Radix happens to update first.
+            state = (await switch.get_attribute("data-state") or "").lower()
+            aria_checked = (await switch.get_attribute("aria-checked") or "").lower()
+            is_on = state == "checked" or aria_checked == "true"
+
+            if is_on == desired:
+                logger.info(
+                    "'Apply edits automatically' already %s",
+                    "on" if desired else "off",
+                )
             else:
-                logger.warning("⚠️ 'Apply edits automatically' toggle not found")
+                await switch.click()
+                await asyncio.sleep(0.5)
+                state2 = (await switch.get_attribute("data-state") or "").lower()
+                aria2 = (await switch.get_attribute("aria-checked") or "").lower()
+                now_on = state2 == "checked" or aria2 == "true"
+                if now_on == desired:
+                    logger.info(
+                        "'Apply edits automatically' set to %s",
+                        "on" if desired else "off",
+                    )
+                else:
+                    logger.warning(
+                        "'Apply edits automatically' click did not change"
+                        " state (still %s; wanted %s)",
+                        "on" if now_on else "off",
+                        "on" if desired else "off",
+                    )
 
-            # Close settings panel
-            await self.page.keyboard.press("Escape")
-            await asyncio.sleep(0.3)
+            await self._dismiss_dropdown(popover_frame)
 
         except Exception as e:
-            logger.debug(f"Could not check auto-apply toggle: {e}")
-            try:
-                await self.page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
-            except Exception:
-                pass
+            logger.debug("Could not set apply-edits toggle: %s", e)
+            await self._dismiss_dropdown(frame)
 
     # ------------------------------------------------------------------
     # Panel close
@@ -655,18 +741,66 @@ class ChatGPTCore(AIAgentCore):
                 p = Path(fp)
                 logger.info(f"📤 Uploading {i + 1}/{len(file_paths)}: {p.name}")
 
-                # Find the Plus (+) button
                 plus_btn = await self._find_plus_button(frame)
                 if not plus_btn:
                     logger.error("❌ Plus (+) button not found for file upload")
+                    await self._dump_upload_dom("chatgpt_plus_missing")
                     return False
 
                 logger.info("✅ Found Plus (+) button — clicking...")
-                async with self.page.expect_file_chooser(timeout=5000) as fc:
-                    await plus_btn.click()
-                chooser = await fc.value
-                await chooser.set_files([fp])
-                logger.info(f"   ✅ Selected: {p.name}")
+                await plus_btn.click()
+                # Let the popover render. ChatGPT's `+` now opens a menu
+                # (Upload files / Skills / Apps) instead of firing the file
+                # chooser directly, so we click the menuitem below.
+                await asyncio.sleep(0.4)
+
+                uploaded = False
+                upload_item = await self._find_chatgpt_upload_menuitem(frame)
+                if upload_item:
+                    logger.info("✅ Found 'Upload files' menu item — clicking...")
+                    try:
+                        async with self.page.expect_file_chooser(timeout=8000) as fc:
+                            await upload_item.click()
+                        chooser = await fc.value
+                        await chooser.set_files([fp])
+                        logger.info(f"   ✅ Selected: {p.name}")
+                        uploaded = True
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ File chooser did not fire after menuitem click: {e}"
+                        )
+
+                if not uploaded:
+                    # Fallback 1: older `+`-is-the-chooser behaviour, in case
+                    # a future build reverts. Re-click `+` and race the event.
+                    try:
+                        plus_btn2 = await self._find_plus_button(frame)
+                        if plus_btn2:
+                            async with self.page.expect_file_chooser(
+                                timeout=3000
+                            ) as fc:
+                                await plus_btn2.click()
+                            chooser = await fc.value
+                            await chooser.set_files([fp])
+                            logger.info(
+                                f"   ✅ Selected via legacy +-direct path: {p.name}"
+                            )
+                            uploaded = True
+                    except Exception:
+                        pass
+
+                if not uploaded:
+                    # Fallback 2: hidden <input type="file">.
+                    if await self._set_files_on_hidden_input(fp):
+                        logger.info(
+                            f"   ✅ Selected via hidden input fallback: {p.name}"
+                        )
+                        uploaded = True
+
+                if not uploaded:
+                    logger.error("❌ File upload failed for this file")
+                    await self._dump_upload_dom("chatgpt_upload_failed")
+                    return False
 
                 await asyncio.sleep(min(5 + p.stat().st_size / 1024 / 100, 30))
 
@@ -678,7 +812,66 @@ class ChatGPTCore(AIAgentCore):
             import traceback
 
             logger.error(traceback.format_exc())
+            await self._dump_upload_dom("chatgpt_upload_exception")
             return False
+
+    async def _find_chatgpt_upload_menuitem(self, chatgpt_frame):
+        """Find the "Upload files" menuitem in the popover that opens after
+        clicking `+`.
+
+        The popover may render inside the ChatGPT iframe or in Excel's top-level
+        ``ms-Layer`` overlay, so we search both. ARIA role+name is the primary
+        anchor; the visible text string is a fallback.
+        """
+        name_re = re.compile(r"upload\s+file", re.I)
+        contexts = [chatgpt_frame, self.page] + list(self.page.frames)
+
+        for ctx in contexts:
+            if ctx is None:
+                continue
+            try:
+                loc = ctx.get_by_role("menuitem", name=name_re).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return await loc.element_handle()
+            except Exception:
+                pass
+
+            for label in ("Upload files", "Upload file"):
+                try:
+                    el = await ctx.query_selector(
+                        f'[role="menuitem"]:has-text("{label}")'
+                    )
+                    if el and await el.is_visible():
+                        return el
+                except Exception:
+                    pass
+                try:
+                    el = await ctx.query_selector(f'button:has-text("{label}")')
+                    if el and await el.is_visible():
+                        return el
+                except Exception:
+                    pass
+
+        return None
+
+    async def _set_files_on_hidden_input(self, file_path) -> bool:
+        """Find any ``<input type="file">`` (including hidden) and set files.
+
+        Bypasses the native file-chooser dialog entirely — some React chat UIs
+        render a hidden input that the visible `+` button proxies to.
+        """
+        for ctx in list(self.page.frames) + [self.page]:
+            try:
+                inputs = await ctx.query_selector_all('input[type="file"]')
+            except Exception:
+                continue
+            for inp in inputs:
+                try:
+                    await inp.set_input_files([str(file_path)])
+                    return True
+                except Exception:
+                    continue
+        return False
 
     async def _find_plus_button(self, frame):
         """Find the Plus (+) file attachment button in the ChatGPT frame.
