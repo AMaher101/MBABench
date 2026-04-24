@@ -203,16 +203,15 @@ class CompletionLogger:
             return
 
         prompt_data = {
-            "prompt_text": (
-                prompt_text[:100] + "..." if len(prompt_text) > 100 else prompt_text
-            ),
+            "prompt_text": prompt_text,
             "start_time": datetime.now().isoformat(),
         }
 
         self.current_prompt = prompt_data
         self.current_task["prompts"].append(prompt_data)
 
-        logger.info("Prompt started: %s", prompt_data["prompt_text"])
+        display = prompt_text if len(prompt_text) <= 100 else prompt_text[:100] + "..."
+        logger.info("Prompt started: %s", display)
 
     def end_prompt(self, success=True, response_length=None):
         """Log end of current prompt (after receiving confirmation)."""
