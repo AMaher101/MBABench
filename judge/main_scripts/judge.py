@@ -362,6 +362,7 @@ def judge_case(
     cached_solution_csv_dir: str = None,
     cached_attempt_csv_dir: str = None,
     attempt_sheet_name_filter: bool = False,
+    ignore_sheets: list[str] | None = None,
     on_overflow: str = "route_to_agentic",
     agentic_template_path: str = None,
     carry_over_context: bool = True,
@@ -416,6 +417,7 @@ def judge_case(
         cached_solution_csv_dir=cached_solution_csv_dir,
         cached_attempt_csv_dir=cached_attempt_csv_dir,
         attempt_sheet_name_filter=attempt_sheet_name_filter,
+        ignore_sheets=ignore_sheets,
     )
 
     cache_log_path = prep["cache_log_path"]
@@ -1155,6 +1157,32 @@ def judge_case(
 ### Shared Case Helpers
 
 
+def _delete_ignored_sheet_files(directories, ignore_sheets):
+    """Delete CSV/format files for sheets in *ignore_sheets* from each directory.
+
+    Files are named ``<safe_sheet_name>_full.csv`` and
+    ``<safe_sheet_name>_additional_format.txt``; matching is case-insensitive
+    against the file stem (i.e. the safe sheet name). Applies uniformly to
+    fresh extractions and to dirs populated from the persistent CSV cache.
+    """
+    if not ignore_sheets:
+        return
+    targets = {s.lower() for s in ignore_sheets}
+    for d in directories:
+        if not d:
+            continue
+        d_path = Path(d)
+        if not d_path.exists():
+            continue
+        for csv_path in d_path.glob("*_full.csv"):
+            stem = csv_path.name.removesuffix("_full.csv")
+            if stem.lower() in targets:
+                csv_path.unlink()
+                fmt = d_path / f"{stem}_additional_format.txt"
+                fmt.unlink(missing_ok=True)
+                logger.info(f"  Ignored sheet '{stem}': removed from {d_path}")
+
+
 def _prepare_case(
     task_folder: str,
     rubric_path: str,
@@ -1164,6 +1192,7 @@ def _prepare_case(
     cached_solution_csv_dir: str = None,
     cached_attempt_csv_dir: str = None,
     attempt_sheet_name_filter: bool = False,
+    ignore_sheets: list[str] | None = None,
     agentic: bool = False,
 ) -> dict:
     """Shared setup for judge workflows: logging, validation, file processing.
@@ -1299,6 +1328,13 @@ def _prepare_case(
 
     ai_attempt_dir = workbook_dirs.get("ai_attempt")
     golden_solution_dir = workbook_dirs.get(golden_solution_stem)
+
+    # Drop sheets the caller asked to ignore (e.g. cover sheets). Applied
+    # after both fresh extraction and cache copy so the artifact on disk
+    # reflects exactly what the judge will see.
+    _delete_ignored_sheet_files(
+        [ai_attempt_dir, golden_solution_dir], ignore_sheets
+    )
 
     # Detect context file
     context_file_path = None
@@ -2361,6 +2397,7 @@ def agentic_judge_case(
     cached_solution_csv_dir: str = None,
     cached_attempt_csv_dir: str = None,
     attempt_sheet_name_filter: bool = False,
+    ignore_sheets: list[str] | None = None,
     carry_over_context: bool = True,
     max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
     auto_routed: bool = False,
@@ -2409,6 +2446,7 @@ def agentic_judge_case(
         cached_solution_csv_dir=cached_solution_csv_dir,
         cached_attempt_csv_dir=cached_attempt_csv_dir,
         attempt_sheet_name_filter=attempt_sheet_name_filter,
+        ignore_sheets=ignore_sheets,
         agentic=True,
     )
 
@@ -3052,6 +3090,7 @@ def main(args):
             use_existing=not args.no_use_existing,
             run_calculation=args.run_calculation,
             attempt_sheet_name_filter=args.attempt_sheet_name_filter,
+            ignore_sheets=args.ignore_sheets,
             carry_over_context=args.carry_over_context,
             max_tool_rounds=args.max_tool_rounds,
         )
@@ -3071,6 +3110,7 @@ def main(args):
             attempt_context_char_limit=args.attempt_char_limit,
             total_character_limit=args.total_char_limit,
             attempt_sheet_name_filter=args.attempt_sheet_name_filter,
+            ignore_sheets=args.ignore_sheets,
             on_overflow=args.on_overflow,
             agentic_template_path=agentic_template_path,
             carry_over_context=args.carry_over_context,
@@ -3147,6 +3187,16 @@ if __name__ == "__main__":
         "--attempt-sheet-name-filter",
         action="store_true",
         help="Filter attempt sheets to only include those starting with 'answers_' or 'model_', stripping the prefix",
+    )
+    parser.add_argument(
+        "--ignore-sheets",
+        nargs="+",
+        default=None,
+        help=(
+            "Sheet names to drop from both attempt and solution before grading "
+            "(case-insensitive, matched against the safe sheet name). "
+            "Example: --ignore-sheets cover."
+        ),
     )
     parser.add_argument(
         "--agentic",

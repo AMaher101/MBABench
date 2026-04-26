@@ -502,6 +502,7 @@ def grade_single_attempt(
     cached_solution_csv_dir=None,
     cached_attempt_csv_dir=None,
     attempt_sheet_name_filter=False,
+    ignore_sheets=None,
     agentic=False,
     carry_over_context=True,
     max_tool_rounds=20,
@@ -567,6 +568,7 @@ def grade_single_attempt(
                 cached_solution_csv_dir=cached_solution_csv_dir,
                 cached_attempt_csv_dir=cached_attempt_csv_dir,
                 attempt_sheet_name_filter=attempt_sheet_name_filter,
+                ignore_sheets=ignore_sheets,
                 carry_over_context=carry_over_context,
                 max_tool_rounds=max_tool_rounds,
             )
@@ -587,6 +589,7 @@ def grade_single_attempt(
                 cached_solution_csv_dir=cached_solution_csv_dir,
                 cached_attempt_csv_dir=cached_attempt_csv_dir,
                 attempt_sheet_name_filter=attempt_sheet_name_filter,
+                ignore_sheets=ignore_sheets,
                 on_overflow=on_overflow,
                 agentic_template_path=agentic_template_path,
                 carry_over_context=carry_over_context,
@@ -1053,6 +1056,7 @@ def main(args):
                 cached_solution_csv_dir=cached_dir,
                 cached_attempt_csv_dir=cached_attempt_dir,
                 attempt_sheet_name_filter=attempt_filter,
+                ignore_sheets=args.ignore_sheets,
                 agentic=agentic,
                 carry_over_context=args.carry_over_context,
                 max_tool_rounds=args.max_tool_rounds,
@@ -1324,6 +1328,23 @@ Examples:
         default=False,
         help="Enable attempt sheet name filtering (disabled by default). "
         "When enabled, only attempt sheets starting with 'answers_' or 'model_' are kept.",
+    )
+    ignore_group = parser.add_mutually_exclusive_group()
+    ignore_group.add_argument(
+        "--ignore-sheets",
+        nargs="+",
+        default=["cover"],
+        help=(
+            "Sheet names to drop from both attempt and solution before grading "
+            "(case-insensitive). Default: ['cover']."
+        ),
+    )
+    ignore_group.add_argument(
+        "--no-ignore-sheets",
+        dest="ignore_sheets",
+        action="store_const",
+        const=[],
+        help="Do not ignore any sheets (overrides the default ['cover']).",
     )
 
     # Agentic mode
