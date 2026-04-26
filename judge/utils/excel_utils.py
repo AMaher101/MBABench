@@ -3,6 +3,7 @@ import base64
 import colorsys
 import csv
 import io
+import math
 import os
 import re
 import shutil
@@ -40,12 +41,247 @@ def load_workbooks(excel_file_path: str) -> Tuple[openpyxl.Workbook, openpyxl.Wo
 
 
 ### Cell processing functions - start
+### Excel-style number rendering ############################################
+# These helpers render a numeric cell value the way Excel itself would
+# display it (e.g. -179166.67 under '\$#,##0;"($"#,##0\);\-' becomes
+# '($179,167)'). They are best-effort: _render_number_format returns
+# None for any format it does not handle, so _get_formatted_value can
+# fall back to the legacy '<raw> [FORMAT:<pattern>]' representation.
+
+
+def _split_format_segments(format_string: str) -> List[str]:
+    """Split an Excel format string on top-level ';' separators.
+    Semicolons inside quoted strings or directly after a backslash are
+    treated as literal."""
+    segments: List[str] = []
+    current: List[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(format_string):
+        c = format_string[i]
+        if c == "\\" and i + 1 < len(format_string):
+            current.append(c)
+            current.append(format_string[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            current.append(c)
+            i += 1
+            continue
+        if c == ";" and not in_quotes:
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    segments.append("".join(current))
+    return segments
+
+
+def _is_date_or_time_format(format_string: str) -> bool:
+    """True when the format contains d/y/h/s outside literal sections.
+    Used to defer date/time rendering to the legacy fallback."""
+    cleaned: List[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(format_string):
+        c = format_string[i]
+        if c == "\\" and i + 1 < len(format_string):
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if not in_quotes:
+            cleaned.append(c.lower())
+        i += 1
+    return bool(re.search(r"[dymhs]", "".join(cleaned)))
+
+
+def _tokenize_format_segment(segment: str) -> List[Tuple[str, str]]:
+    """Tokenize a segment into ('number', text) and ('literal', text) parts.
+    Number tokens are contiguous runs of #, 0, ., , and %. Everything
+    else (escaped chars, quoted strings, $, parens, dashes, letters)
+    becomes a literal."""
+    tokens: List[Tuple[str, str]] = []
+    cur_lit: List[str] = []
+    cur_num: List[str] = []
+
+    def flush_lit() -> None:
+        if cur_lit:
+            tokens.append(("literal", "".join(cur_lit)))
+            cur_lit.clear()
+
+    def flush_num() -> None:
+        if cur_num:
+            tokens.append(("number", "".join(cur_num)))
+            cur_num.clear()
+
+    i = 0
+    while i < len(segment):
+        c = segment[i]
+        if c == "\\" and i + 1 < len(segment):
+            flush_num()
+            cur_lit.append(segment[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            flush_num()
+            i += 1
+            while i < len(segment) and segment[i] != '"':
+                cur_lit.append(segment[i])
+                i += 1
+            i += 1
+            continue
+        if c in "#0.,%":
+            flush_lit()
+            cur_num.append(c)
+            i += 1
+            continue
+        flush_num()
+        cur_lit.append(c)
+        i += 1
+
+    flush_num()
+    flush_lit()
+    return tokens
+
+
+def _round_half_away_from_zero(value: float, decimals: int) -> float:
+    """Round to *decimals* places using half-away-from-zero (Excel's rule)."""
+    if value == 0:
+        return 0.0
+    multiplier = 10 ** decimals
+    if value > 0:
+        return math.floor(value * multiplier + 0.5) / multiplier
+    return -math.floor(-value * multiplier + 0.5) / multiplier
+
+
+def _format_number_template(value: float, template: str) -> str:
+    """Render *value* using a number-only template like '#,##0.00' or '0.00%'."""
+    has_percent = "%" in template
+    template_no_pct = template.replace("%", "")
+    rendered_value = value * 100 if has_percent else value
+
+    if "." in template_no_pct:
+        int_part, frac_part = template_no_pct.split(".", 1)
+        decimals = sum(1 for c in frac_part if c in "0#")
+    else:
+        int_part = template_no_pct
+        decimals = 0
+
+    use_thousands = "," in int_part
+    rounded = _round_half_away_from_zero(rendered_value, decimals)
+
+    if decimals > 0:
+        formatted = (
+            f"{rounded:,.{decimals}f}" if use_thousands else f"{rounded:.{decimals}f}"
+        )
+    else:
+        int_value = int(rounded)
+        formatted = f"{int_value:,d}" if use_thousands else f"{int_value:d}"
+
+    if has_percent:
+        formatted += "%"
+    return formatted
+
+
+def _apply_format_segment(value: float, segment: str) -> str:
+    """Render *value* using one segment (i.e. one of pos/neg/zero)."""
+    tokens = _tokenize_format_segment(segment)
+
+    number_template = next((t for k, t in tokens if k == "number"), None)
+    if number_template is None:
+        # Pure-literal segment, e.g. '\-' for zero -> just emit the literals.
+        return "".join(t for _, t in tokens)
+
+    formatted_number = _format_number_template(value, number_template)
+
+    out: List[str] = []
+    replaced = False
+    for kind, text in tokens:
+        if kind == "number":
+            if not replaced:
+                out.append(formatted_number)
+                replaced = True
+            # additional number tokens (rare) are dropped
+        else:
+            out.append(text)
+    return "".join(out)
+
+
+def _render_number_format(value, format_string: str) -> Optional[str]:
+    """Render *value* as Excel would display it, or None to defer to fallback.
+
+    Each early return below is a path we deliberately do NOT render;
+    returning None hands control back to the legacy
+    '<raw> [FORMAT:<pattern>]' representation in _get_formatted_value.
+    """
+
+    # Path A: no format / default format / text format -> defer.
+    if format_string is None or format_string == "":
+        return None
+    if format_string in ("General", "@"):
+        return None
+
+    # Path B: color codes ([Red], [Blue], ...) or conditional ([>0]) -> defer.
+    if "[" in format_string:
+        return None
+
+    # Path C: scientific notation ('0.00E+00') -> defer.
+    if "E+" in format_string or "E-" in format_string:
+        return None
+
+    # Path D: date/time formats (any d/y/h/s outside literals) -> defer.
+    if _is_date_or_time_format(format_string):
+        return None
+
+    # Path E: render. Pick the segment matching the value's sign.
+    segments = _split_format_segments(format_string)
+    if value < 0 and len(segments) >= 2 and segments[1].strip():
+        # Negative-specific segment exists; it usually carries its own
+        # sign indication (parens or literal '-'), so render |value|.
+        return _apply_format_segment(abs(value), segments[1])
+    if value == 0 and len(segments) >= 3 and segments[2].strip():
+        return _apply_format_segment(value, segments[2])
+    # Positive segment also handles negatives when no neg segment exists
+    # (Excel prefixes a '-' sign in that case; _format_number_template
+    # produces a signed string for negative inputs).
+    return _apply_format_segment(value, segments[0])
+
+
+### End Excel-style number rendering ########################################
+
+
 def _get_formatted_value(cell, cell_data_only, _cached_config=None) -> str:
     """Get the formatted display value of a cell, preserving number formatting.
+
+    Two paths:
+      Path 1 (render-as-displayed): for numeric cells whose format is
+        recognised by _render_number_format, return what Excel would
+        display, e.g. '($179,167)' or '$40,000,000' or '3.38%'.
+      Path 2 (legacy fallback): otherwise emit the original
+        '<raw_value> [FORMAT:<pattern>]' form. Reached for None, text,
+        dates, General/@, conditional/color formats, scientific
+        notation, and anything else the renderer punts on.
 
     _cached_config: optional (do_rounding, float_rounding, percentage_rounding) tuple
     to skip per-cell env/YAML reads when the caller has already loaded them.
     """
+
+    # --- Path 1: render-as-displayed (numeric values only) ----------------
+    raw_value_for_render = cell_data_only.value
+    if isinstance(raw_value_for_render, (int, float)):
+        fmt = getattr(cell, "number_format", None)
+        if fmt:
+            rendered = _render_number_format(raw_value_for_render, fmt)
+            if rendered is not None:
+                return rendered
+
+    # --- Path 2: legacy fallback (original implementation, unchanged) -----
 
     def _default_value(raw_value, float_rounding: int, do_rounding: bool) -> str:
         if isinstance(raw_value, float):
