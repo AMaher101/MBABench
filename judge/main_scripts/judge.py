@@ -489,13 +489,33 @@ def judge_case(
                 f"over={solution_over}); attempt={raw_attempt_chars:,} "
                 f"(limit {upfront_attempt_limit:,}, over={attempt_over})."
             )
+        sol_overflow = max(0, raw_solution_chars - solution_context_char_limit)
+        att_overflow = max(0, raw_attempt_chars - upfront_attempt_limit)
+        reasons = []
+        if solution_over:
+            reasons.append(
+                f"solution exceeds limit by {sol_overflow:,} chars "
+                f"({raw_solution_chars:,} > {solution_context_char_limit:,})"
+            )
+        if attempt_over:
+            reasons.append(
+                f"attempt exceeds limit by {att_overflow:,} chars "
+                f"({raw_attempt_chars:,} > {upfront_attempt_limit:,})"
+            )
         logger.info(
-            "\n[Auto-route] Context exceeds budget — handing off to agentic judge "
-            "instead of shortening CSVs.\n"
-            f"  solution={raw_solution_chars:,} chars "
-            f"(limit {solution_context_char_limit:,}, over={solution_over})\n"
-            f"  attempt={raw_attempt_chars:,} chars "
-            f"(limit {upfront_attempt_limit:,}, over={attempt_over})"
+            "\n[Auto-route] Routing to agentic judge instead of shortening CSVs.\n"
+            f"  Reason: {'; '.join(reasons)}.\n"
+            f"  Character counts (raw, unshortened):\n"
+            f"    solution: {raw_solution_chars:>12,} chars  "
+            f"limit={solution_context_char_limit:>12,}  "
+            f"{'OVER by ' + format(sol_overflow, ',') if solution_over else 'within'}\n"
+            f"    attempt:  {raw_attempt_chars:>12,} chars  "
+            f"limit={upfront_attempt_limit:>12,}  "
+            f"{'OVER by ' + format(att_overflow, ',') if attempt_over else 'within'}\n"
+            f"  Total budget: {total_character_limit:,} chars "
+            f"(effective attempt limit derived from total - solution).\n"
+            f"  Auto-route policy: on_overflow='route_to_agentic' "
+            f"(set --on-overflow shorten to use the legacy lossy CSV-shortening path)."
         )
         # Detach the standard-judge log handler so the agentic call's _prepare_case
         # can attach its own without double-logging. The partial standard log
