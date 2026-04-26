@@ -338,9 +338,9 @@ def extract_cell_formatting(cell) -> str:
         # Font formatting
         if cell.font:
             font = cell.font
-            if font.name and font.name != "Calibri":  # Skip default font
+            if font.name:
                 formatting_parts.append(f"font:{font.name}")
-            if font.size and font.size != 11:  # Skip default size
+            if font.size:
                 formatting_parts.append(f"size:{font.size}")
             if font.bold:
                 formatting_parts.append("bold")

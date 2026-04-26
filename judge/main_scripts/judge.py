@@ -1947,6 +1947,11 @@ def _msg_to_dict(m):
     if isinstance(m, dict):
         return m
 
+    # Handles ChatCompletionMessage (pydantic v2) — preserves role, content,
+    # tool_calls, and any reasoning fields rather than stringifying.
+    if hasattr(m, "model_dump"):
+        return m.model_dump(exclude_none=True)
+
     logger.warning(
         f"  Warning: encountered non-dict message of type {type(m)}; \n content: {m}"
     )
