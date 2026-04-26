@@ -324,6 +324,25 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
 ### Main Judge Function
 
 
+def _compute_effective_attempt_limit(
+    solution_chars: int,
+    attempt_char_limit: int,
+    total_char_limit: int,
+) -> int:
+    """Compute the attempt-side char budget given how much solution already uses.
+
+    If a positive total_char_limit is set and the solution leaves more room than
+    the static attempt_char_limit, the attempt limit grows to fill the remainder.
+    Otherwise the static attempt_char_limit applies.
+    """
+    effective = attempt_char_limit
+    if total_char_limit and total_char_limit > 0:
+        remaining_room = total_char_limit - solution_chars
+        if remaining_room > attempt_char_limit:
+            effective = remaining_room
+    return effective
+
+
 def judge_case(
     task_folder: str,
     client: OpenAI,
@@ -343,6 +362,10 @@ def judge_case(
     cached_solution_csv_dir: str = None,
     cached_attempt_csv_dir: str = None,
     attempt_sheet_name_filter: bool = False,
+    on_overflow: str = "route_to_agentic",
+    agentic_template_path: str = None,
+    carry_over_context: bool = True,
+    max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
 ):
     """Execute the complete judging workflow for a case using OpenRouter.
 
@@ -368,9 +391,20 @@ def judge_case(
             When provided, skips ai_attempt xlsx CSV extraction and copies from this cache instead.
         attempt_sheet_name_filter: If True, only keep attempt sheets starting with
             'answers_' or 'model_', stripping the prefix from the output name.
+        on_overflow: What to do when the extracted CSVs exceed the char budget.
+            "route_to_agentic" (default) hands off to ``agentic_judge_case`` with
+            the unshortened CSVs as cached input. "shorten" preserves the legacy
+            lossy CSV-shortening path.
+        agentic_template_path: Required when ``on_overflow == "route_to_agentic"``
+            and an overflow is actually triggered; supplies the prompt template
+            for the agentic handoff. Must be set by callers that may overflow.
+        carry_over_context: Forwarded to ``agentic_judge_case`` on auto-route only.
+        max_tool_rounds: Forwarded to ``agentic_judge_case`` on auto-route only.
 
     Returns:
-        dict: Dictionary with paths to ai_judgement.json and output_dir.
+        dict: Dictionary with paths to ai_judgement.json and output_dir. When
+        the run auto-routed to the agentic judge, ``result["auto_routed"]`` is
+        True and the rest of the dict is whatever ``agentic_judge_case`` returns.
     """
     # Shared preparation: validation, file processing
     prep = _prepare_case(
@@ -414,6 +448,80 @@ def judge_case(
         remove_log_file(cache_log_path)
         shutil.copy(cache_log_path, str(output_dir / "judge.log"))
         return
+
+    # STEP 1.5: Decide whether to auto-route to the agentic judge.
+    #
+    # We measure raw extracted-CSV sizes BEFORE any shortening branch runs, so
+    # the dirs we hand off (golden_solution_dir, ai_attempt_dir) are guaranteed
+    # to be the original CSVs from process_case_files — NOT the lossy
+    # *_shortened/ copies produced by the legacy shortening path further below.
+    raw_solution_chars = (
+        calculate_message_size_for_files(Path(golden_solution_dir))["total"]
+        if golden_solution_dir and Path(golden_solution_dir).exists()
+        else 0
+    )
+    raw_attempt_chars = (
+        calculate_message_size_for_files(Path(ai_attempt_dir))["total"]
+        if ai_attempt_dir and Path(ai_attempt_dir).exists()
+        else 0
+    )
+    upfront_attempt_limit = _compute_effective_attempt_limit(
+        raw_solution_chars, attempt_context_char_limit, total_character_limit
+    )
+    solution_over = (
+        bool(solution_context_char_limit)
+        and solution_context_char_limit > 0
+        and raw_solution_chars > solution_context_char_limit
+    )
+    attempt_over = (
+        bool(upfront_attempt_limit)
+        and upfront_attempt_limit > 0
+        and raw_attempt_chars > upfront_attempt_limit
+    )
+
+    if (solution_over or attempt_over) and on_overflow == "route_to_agentic":
+        if agentic_template_path is None:
+            raise ValueError(
+                "judge_case: on_overflow='route_to_agentic' triggered but "
+                "agentic_template_path was not provided. Caller must supply an "
+                "agentic prompt template when auto-routing is enabled. "
+                f"solution={raw_solution_chars:,} (limit {solution_context_char_limit:,}, "
+                f"over={solution_over}); attempt={raw_attempt_chars:,} "
+                f"(limit {upfront_attempt_limit:,}, over={attempt_over})."
+            )
+        logger.info(
+            "\n[Auto-route] Context exceeds budget — handing off to agentic judge "
+            "instead of shortening CSVs.\n"
+            f"  solution={raw_solution_chars:,} chars "
+            f"(limit {solution_context_char_limit:,}, over={solution_over})\n"
+            f"  attempt={raw_attempt_chars:,} chars "
+            f"(limit {upfront_attempt_limit:,}, over={attempt_over})"
+        )
+        # Detach the standard-judge log handler so the agentic call's _prepare_case
+        # can attach its own without double-logging. The partial standard log
+        # remains on disk under PATHS_SCRATCH_PATH/judge_cache/ for debugging.
+        remove_log_file(cache_log_path)
+        return agentic_judge_case(
+            task_folder=task_folder,
+            client=client,
+            rubric_path=rubric_path,
+            template_path=agentic_template_path,
+            rubric_weight_path=rubric_weight_path,
+            model=model,
+            nocall=nocall,
+            noupload=noupload,
+            use_existing=use_existing,
+            attempt_model=attempt_model,
+            run_calculation=run_calculation,
+            # Reuse the unshortened CSVs we just extracted. _prepare_case in the
+            # agentic call will copytree from these dirs into its own output_dir.
+            cached_solution_csv_dir=str(golden_solution_dir) if golden_solution_dir else None,
+            cached_attempt_csv_dir=str(ai_attempt_dir) if ai_attempt_dir else None,
+            attempt_sheet_name_filter=attempt_sheet_name_filter,
+            carry_over_context=carry_over_context,
+            max_tool_rounds=max_tool_rounds,
+            auto_routed=True,
+        )
 
     # STEP 2: Prepare files for OpenRouter
     logger.info("\n[Step 2] Preparing files for OpenRouter...")
@@ -543,19 +651,19 @@ def judge_case(
         ai_total_chars = ai_size_info["total"]
 
         # Calculate effective attempt limit dynamically
-        effective_attempt_limit = attempt_context_char_limit
-        if total_character_limit and total_character_limit > 0:
-            remaining_room = total_character_limit - final_solution_chars
-            if remaining_room > attempt_context_char_limit:
-                effective_attempt_limit = remaining_room
-                logger.info(
-                    f"\n[Step 2c] Dynamic attempt limit: solution used {final_solution_chars:,} chars, "
-                    f"remaining room from total limit ({total_character_limit:,}) = {remaining_room:,} chars"
-                )
-                logger.info(
-                    f"  Effective attempt limit increased: {attempt_context_char_limit:,} -> "
-                    f"{effective_attempt_limit:,} chars"
-                )
+        effective_attempt_limit = _compute_effective_attempt_limit(
+            final_solution_chars, attempt_context_char_limit, total_character_limit
+        )
+        if effective_attempt_limit != attempt_context_char_limit:
+            logger.info(
+                f"\n[Step 2c] Dynamic attempt limit: solution used {final_solution_chars:,} chars, "
+                f"remaining room from total limit ({total_character_limit:,}) = "
+                f"{total_character_limit - final_solution_chars:,} chars"
+            )
+            logger.info(
+                f"  Effective attempt limit increased: {attempt_context_char_limit:,} -> "
+                f"{effective_attempt_limit:,} chars"
+            )
 
         logger.info(
             f"\n[Step 2c] AI attempt size: {ai_total_chars:,} chars "
@@ -1229,6 +1337,7 @@ def _finalize_case(
     attempt_context_reduced=False,
     context_reduced_details=None,
     agentic=False,
+    auto_routed=False,
 ):
     """Shared finalization: save judgement, calculate scores, write metadata."""
     output_dir = Path(output_dir)
@@ -1301,6 +1410,7 @@ def _finalize_case(
         "task_folder": task_folder_name,
         "grader_model": model,
         "judge_mode": "agentic" if agentic else "non-agentic",
+        "auto_routed": auto_routed,
         "attempt_model": attempt_model,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "judge_version": versions["JUDGE_VERSION"],
@@ -1386,6 +1496,7 @@ def _finalize_case(
         "solution_context_reduced": solution_context_reduced,
         "attempt_context_reduced": attempt_context_reduced,
         "context_reduced_details": context_reduced_details,
+        "auto_routed": auto_routed,
     }
     if score_results:
         result["score_results"] = score_results
@@ -2052,8 +2163,8 @@ def _build_pressure_signal(
 ) -> tuple[str, str]:
     """Return (status_line, tier) for the current context pressure level.
 
-    Tier is one of 'low' (<70%), 'advisory' (70-85%), 'strong' (85-95%),
-    'forced' (>=95%).
+    Tier is one of 'low' (<10%), 'advisory' (10-20%), 'strong' (20-80%),
+    'forced' (>=80%).
     """
     pct = (prompt_tokens / limit * 100) if limit > 0 else 0.0
 
@@ -2232,6 +2343,7 @@ def agentic_judge_case(
     attempt_sheet_name_filter: bool = False,
     carry_over_context: bool = True,
     max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
+    auto_routed: bool = False,
 ):
     """Execute the judging workflow using an agentic multi-turn approach.
 
@@ -2258,6 +2370,11 @@ def agentic_judge_case(
         carry_over_context: If True, include prior category findings in subsequent
             category prompts.
         max_tool_rounds: Maximum number of tool-calling rounds per category.
+        auto_routed: True iff this run was auto-routed from ``judge_case`` because
+            the standard judge would have overflowed the char budget. Recorded
+            in ``_metadata.json`` and the result dict so downstream bookkeeping
+            (DB writes, experiment analysis) can distinguish "agentic by config"
+            from "agentic by overflow".
 
     Returns:
         dict: Same structure as judge_case — paths, scores, parse info.
@@ -2852,6 +2969,7 @@ def agentic_judge_case(
         ai_attempt_dir=ai_attempt_dir,
         parse_failures=parse_failures,
         agentic=True,
+        auto_routed=auto_routed,
     )
 
 
@@ -2933,6 +3051,10 @@ def main(args):
             attempt_context_char_limit=args.attempt_char_limit,
             total_character_limit=args.total_char_limit,
             attempt_sheet_name_filter=args.attempt_sheet_name_filter,
+            on_overflow=args.on_overflow,
+            agentic_template_path=agentic_template_path,
+            carry_over_context=args.carry_over_context,
+            max_tool_rounds=args.max_tool_rounds,
         )
 
 
@@ -3028,6 +3150,17 @@ if __name__ == "__main__":
         type=int,
         default=AGENTIC_JUDGE_MAX_ROUNDS,
         help=f"(Agentic only) Maximum number of tool-calling rounds per category (default: {AGENTIC_JUDGE_MAX_ROUNDS})",
+    )
+    parser.add_argument(
+        "--on-overflow",
+        choices=["route_to_agentic", "shorten"],
+        default="route_to_agentic",
+        help=(
+            "(Standard judge only) What to do when extracted CSVs exceed the "
+            "char budget. 'route_to_agentic' (default) hands off to the agentic "
+            "judge with the unshortened CSVs as cached input. 'shorten' uses "
+            "the legacy lossy CSV-shortening path."
+        ),
     )
 
     # Args preprocessing

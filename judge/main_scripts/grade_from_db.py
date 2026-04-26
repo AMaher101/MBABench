@@ -59,47 +59,47 @@ AGENTIC_JUDGE_MAX_ROUNDS = int(
 # --agentic (force all on) or --no-agentic (force all off).
 TASKS_TO_GRADE_WITH_AGENTIC_JUDGE: set[int] = set(
     [
-        104,
-        61,
-        296,
-        65,
-        127,
-        289,
-        386,
-        58,
-        307,
-        164,
-        321,
-        228,
-        50,
-        108,
-        75,
-        343,
-        304,
-        285,
-        389,
-        260,
-        73,
-        364,
-        176,
-        374,
-        67,
-        327,
-        174,
-        147,
-        238,
-        135,
-        92,
-        212,
-        379,
-        83,
-        197,
-        339,
-        262,
-        273,
-        373,
-        217,
-        384,
+        # 104,
+        # 61,
+        # 296,
+        # 65,
+        # 127,
+        # 289,
+        # 386,
+        # 58,
+        # 307,
+        # 164,
+        # 321,
+        # 228,
+        # 50,
+        # 108,
+        # 75,
+        # 343,
+        # 304,
+        # 285,
+        # 389,
+        # 260,
+        # 73,
+        # 364,
+        # 176,
+        # 374,
+        # 67,
+        # 327,
+        # 174,
+        # 147,
+        # 238,
+        # 135,
+        # 92,
+        # 212,
+        # 379,
+        # 83,
+        # 197,
+        # 339,
+        # 262,
+        # 273,
+        # 373,
+        # 217,
+        # 384,
         # 219, 1,712,711 chars
         # 132, 1,685,414 chars
     ]
@@ -506,6 +506,7 @@ def grade_single_attempt(
     carry_over_context=True,
     max_tool_rounds=20,
     no_s3_upload=False,
+    on_overflow="route_to_agentic",
 ):
     """Grade a single attempt. Returns a result dict."""
     attempt_id = attempt["attempt_id"]
@@ -586,6 +587,10 @@ def grade_single_attempt(
                 cached_solution_csv_dir=cached_solution_csv_dir,
                 cached_attempt_csv_dir=cached_attempt_csv_dir,
                 attempt_sheet_name_filter=attempt_sheet_name_filter,
+                on_overflow=on_overflow,
+                agentic_template_path=agentic_template_path,
+                carry_over_context=carry_over_context,
+                max_tool_rounds=max_tool_rounds,
             )
             if solution_char_limit is not None:
                 judge_kwargs["solution_context_char_limit"] = solution_char_limit
@@ -644,9 +649,7 @@ def grade_single_attempt(
             prefix_root = load_env_var("S3_RAW_FILES_PREFIX", required=True)
             folder_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             key_prefix = f"{prefix_root}/{folder_name}"
-            logger.info(
-                f"  Uploading raw files -> s3://{bucket}/{key_prefix}/ ..."
-            )
+            logger.info(f"  Uploading raw files -> s3://{bucket}/{key_prefix}/ ...")
             raw_files_list = upload_dir_to_s3(output_dir, bucket, key_prefix)
             raw_files_path = f"s3://{bucket}/{key_prefix}/"
             logger.info(f"  Uploaded {len(raw_files_list)} files to S3")
@@ -683,9 +686,7 @@ def grade_single_attempt(
         # judge.py marks these with parse_failures[cat]["success"] = False.
         parse_failures = result.get("parse_failures") or {}
         hard_parse_failures = [
-            cat
-            for cat, info in parse_failures.items()
-            if not info.get("success", True)
+            cat for cat, info in parse_failures.items() if not info.get("success", True)
         ]
         if hard_parse_failures:
             logger.warning(
@@ -731,6 +732,7 @@ def grade_single_attempt(
             "has_scoring_warnings": has_scoring_warnings,
             "solution_csv_dir": result.get("solution_csv_dir"),
             "attempt_csv_dir": result.get("attempt_csv_dir"),
+            "auto_routed": bool(result.get("auto_routed")),
         }
 
     except Exception as e:
@@ -1055,6 +1057,7 @@ def main(args):
                 carry_over_context=args.carry_over_context,
                 max_tool_rounds=args.max_tool_rounds,
                 no_s3_upload=args.no_s3_upload,
+                on_overflow=args.on_overflow,
             )
             results.append(result)
 
@@ -1092,6 +1095,13 @@ def main(args):
                         f"{attempt_cache_dir}"
                     )
                 attempt_csv_cache[attempt_id] = str(attempt_cache_dir)
+
+            # If judge_case auto-routed to the agentic judge due to context
+            # overflow, the run that actually produced these scores was agentic.
+            # Reflect that in the DB row so agentic_mode + version columns match
+            # what _metadata.json records.
+            if result.get("auto_routed"):
+                agentic = True
 
             # Write to DB. We write whenever we have a usable result with scores,
             # even if the grading is marked failed (e.g. parse failures) — that
@@ -1182,7 +1192,9 @@ def main(args):
             if r.get("has_scoring_warnings"):
                 sw = r.get("scoring_warnings") or {}
                 counts = {
-                    "unscored": sum(len(v) for v in (sw.get("unscored_checks") or {}).values()),
+                    "unscored": sum(
+                        len(v) for v in (sw.get("unscored_checks") or {}).values()
+                    ),
                     "empty_cats": len(sw.get("empty_category_judgements") or []),
                     "dupes": sum(
                         len(v) for v in (sw.get("duplicate_judgements") or {}).values()
@@ -1190,7 +1202,8 @@ def main(args):
                     "mismatches": len(sw.get("mistake_count_mismatches") or []),
                 }
                 parts.append(
-                    "scoring_warn=" + " ".join(f"{k}={v}" for k, v in counts.items() if v)
+                    "scoring_warn="
+                    + " ".join(f"{k}={v}" for k, v in counts.items() if v)
                 )
             if r.get("grading_id"):
                 parts.append(f"grading_id={r['grading_id']}")
@@ -1327,6 +1340,18 @@ Examples:
         type=int,
         default=AGENTIC_JUDGE_MAX_ROUNDS,
         help=f"(Agentic only) Max tool-calling rounds per category (default: {AGENTIC_JUDGE_MAX_ROUNDS})",
+    )
+    parser.add_argument(
+        "--on-overflow",
+        choices=["route_to_agentic", "shorten"],
+        default="route_to_agentic",
+        help=(
+            "What the standard judge does when extracted CSVs exceed the char "
+            "budget. 'route_to_agentic' (default) hands off to the agentic "
+            "judge with the unshortened CSVs as cached input. 'shorten' uses "
+            "the legacy lossy CSV-shortening path. Ignored when --agentic is "
+            "set or the task is in TASKS_TO_GRADE_WITH_AGENTIC_JUDGE."
+        ),
     )
 
     # Execution modes
