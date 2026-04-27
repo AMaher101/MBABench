@@ -716,9 +716,16 @@ def create_enhanced_cell(
     else:
         cell_parts = [display_value]
 
-    # Add formula if present
+    # Add formula if present. Plain formulas come back as strings starting
+    # with "="; array formulas (Ctrl+Shift+Enter) come back as ArrayFormula
+    # objects whose .text is the formula and .ref is the spilled range.
+    formula_text = None
     if isinstance(cell.value, str) and cell.value.startswith("="):
-        cell_parts.append(f"FORMULA:{cell.value}")
+        formula_text = cell.value
+    elif isinstance(cell.value, openpyxl.worksheet.formula.ArrayFormula):
+        formula_text = cell.value.text
+    if formula_text is not None:
+        cell_parts.append(f"FORMULA:{formula_text}")
 
     # Add formatting if present and cell has value or color formatting
     if _cell_has_value_or_color(cell, cell_data_only):
