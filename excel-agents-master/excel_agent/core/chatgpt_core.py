@@ -225,37 +225,31 @@ class ChatGPTCore(AIAgentCore):
         if not target_lower:
             return
 
-        try:
-            logger.info("Selecting Thinking effort: %s", target)
+        async def _read_current(pill_el):
+            aria = (await pill_el.get_attribute("aria-label") or "").strip()
+            cur = aria.rsplit(":", 1)[-1].strip() if ":" in aria else ""
+            if not cur:
+                cur = (await pill_el.text_content() or "").strip()
+            return cur
 
-            # Locate the pill.
+        async def _attempt():
+            """Return 'selected', 'already', 'pill_missing', 'menu_missing',
+            'not_found', or 'click_no_effect'."""
             pill = await frame.query_selector("button#reasoning-effort-select")
             if not pill:
                 pill = await frame.query_selector(
                     'button[aria-label^="Thinking effort"]'
                 )
             if not pill or not await pill.is_visible():
-                logger.warning(
-                    "Thinking-effort pill not found (id='reasoning-effort-select',"
-                    ' aria-label^="Thinking effort") — skipping'
-                )
-                return
+                return "pill_missing"
 
-            # Already on target? aria-label shape: "Thinking effort: Heavy".
-            aria = (await pill.get_attribute("aria-label") or "").strip()
-            current = aria.rsplit(":", 1)[-1].strip() if ":" in aria else ""
-            if not current:
-                current = (await pill.text_content() or "").strip()
-            current_lower = current.lower()
-            if current_lower == target_lower or target_lower in current_lower:
-                logger.info("Thinking effort '%s' already selected", target)
-                return
+            current = (await _read_current(pill)).lower()
+            if current == target_lower or target_lower in current:
+                return "already"
 
             await pill.click()
 
-            # Wait for the Radix menu to open (up to ~2s). Using
-            # data-state="open" gives a loud, specific open signal so
-            # we don't misdiagnose "menu didn't open" as "item missing".
+            # Wait for the Radix menu to open (up to ~2s).
             menu = None
             for _ in range(20):
                 await asyncio.sleep(0.1)
@@ -263,66 +257,91 @@ class ChatGPTCore(AIAgentCore):
                 if menu:
                     break
             if not menu:
-                logger.warning(
-                    "Thinking-effort menu did not open (no [role=menu]"
-                    "[data-state=open] found) — skipping"
-                )
                 await self._dismiss_dropdown(frame)
-                return
+                return "menu_missing"
 
-            # Scan items inside this menu only.
-            items = await menu.query_selector_all('[role="menuitem"]')
-            for item in items:
-                try:
-                    if not await item.is_visible():
+            async def _click_matching():
+                items = await menu.query_selector_all('[role="menuitem"]')
+                # Primary pass: exact / substring on the truncate label.
+                for item in items:
+                    try:
+                        if not await item.is_visible():
+                            continue
+                        label_el = await item.query_selector("span.truncate")
+                        label = (
+                            ((await label_el.text_content()) if label_el else "")
+                            .strip()
+                            .lower()
+                        )
+                        if label == target_lower or (label and target_lower in label):
+                            await item.click()
+                            return True
+                    except Exception:
                         continue
-                    # Primary: the short label ("Fast" / "Heavy" / …). The
-                    # label is the sole `span.truncate` inside the item —
-                    # the description sibling uses different utilities.
-                    label_el = await item.query_selector("span.truncate")
-                    label = (
-                        ((await label_el.text_content()) if label_el else "")
-                        .strip()
-                        .lower()
+                # Last-resort pass: full text substring.
+                for item in items:
+                    try:
+                        if not await item.is_visible():
+                            continue
+                        full = (await item.text_content() or "").strip().lower()
+                        if target_lower in full:
+                            await item.click()
+                            return True
+                    except Exception:
+                        continue
+                return False
+
+            if not await _click_matching():
+                await self._dismiss_dropdown(frame)
+                return "not_found"
+
+            # Verify the pill actually changed. Radix popovers occasionally
+            # accept the click visually but the parent React state misses
+            # the update — verify so we can retry instead of running with
+            # the wrong effort.
+            await asyncio.sleep(0.5)
+            verify_pill = await frame.query_selector(
+                "button#reasoning-effort-select"
+            ) or await frame.query_selector('button[aria-label^="Thinking effort"]')
+            if not verify_pill:
+                return "selected"  # pill gone; treat as success
+            after = (await _read_current(verify_pill)).lower()
+            if after == target_lower or target_lower in after:
+                return "selected"
+            logger.warning(
+                "Thinking-effort click did not change pill (still '%s')", after
+            )
+            return "click_no_effect"
+
+        try:
+            for attempt in (1, 2):
+                logger.info(
+                    "Selecting Thinking effort: %s (attempt %d)", target, attempt
+                )
+                result = await _attempt()
+                if result == "selected":
+                    logger.info("Selected Thinking effort '%s'", target)
+                    return
+                if result == "already":
+                    logger.info("Thinking effort '%s' already selected", target)
+                    return
+                if result == "pill_missing":
+                    logger.warning("Thinking-effort pill not found — skipping")
+                    return
+                if result in ("menu_missing", "not_found", "click_no_effect"):
+                    if attempt == 1:
+                        logger.info(
+                            "Thinking-effort attempt 1 failed (%s); retrying",
+                            result,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    logger.warning(
+                        "Thinking effort '%s' not applied after 2 attempts (%s)",
+                        target,
+                        result,
                     )
-                    # Exact label match first; fall back to substring on
-                    # label; absolute last resort, substring on full text.
-                    if label == target_lower:
-                        await item.click()
-                        logger.info("Selected Thinking effort '%s'", target)
-                        await asyncio.sleep(0.5)
-                        return
-                    if label and target_lower in label:
-                        await item.click()
-                        logger.info(
-                            "Selected Thinking effort '%s' (label substring)",
-                            target,
-                        )
-                        await asyncio.sleep(0.5)
-                        return
-                except Exception:
-                    continue
-
-            # Fall through — last-resort full-text substring pass.
-            for item in items:
-                try:
-                    if not await item.is_visible():
-                        continue
-                    full = (await item.text_content() or "").strip().lower()
-                    if target_lower in full:
-                        await item.click()
-                        logger.info(
-                            "Selected Thinking effort '%s' (full-text fallback)",
-                            target,
-                        )
-                        await asyncio.sleep(0.5)
-                        return
-                except Exception:
-                    continue
-
-            logger.warning("Thinking effort '%s' not found in dropdown", target)
-            await self._dismiss_dropdown(frame)
-
+                    return
         except Exception as e:
             logger.debug("Could not set thinking effort: %s", e)
             await self._dismiss_dropdown(frame)
@@ -648,10 +667,17 @@ class ChatGPTCore(AIAgentCore):
                 await send_btn.click(force=True)
                 logger.info("✅ Clicked send button")
             else:
-                # Fallback: press Enter
+                # Fallback: Ctrl+Enter on the focused input. Plain Enter
+                # on a contenteditable inserts a newline (does not
+                # submit), and on the in-Excel add-in often loses focus
+                # to the formula bar.
                 if textarea:
-                    await textarea.press("Enter")
-                    logger.info("✅ Pressed Enter to send")
+                    try:
+                        await textarea.focus()
+                    except Exception:
+                        pass
+                    await textarea.press("Control+Enter")
+                    logger.info("✅ Pressed Ctrl+Enter to send (fallback)")
                 else:
                     logger.error("❌ Could not find textarea or send button")
                     return False
@@ -667,40 +693,77 @@ class ChatGPTCore(AIAgentCore):
 
         The send button contains an SVG with an upward arrow path:
         M11.293 5.293a1 1 0 0 1 1.414 0l5 5a1...
+
+        Searches the cached ChatGPT frame first, then every other page
+        frame. The in-Excel ChatGPT add-in occasionally splits its input
+        and send button across sibling iframes, so single-frame lookup
+        misses the button even when the selector is exact.
         """
-        # Strategy 1: standard selectors
-        for sel in [
+        selectors = [
             '[data-testid="send-button"]',
             'button[aria-label="Send message"]',
             'button[aria-label="Send"]',
             'button[aria-label*="Send" i]',
-        ]:
-            try:
-                btn = await frame.query_selector(sel)
-                if btn and await btn.is_visible():
-                    return btn
-            except Exception:
-                continue
+        ]
 
-        # Strategy 2: find button with the arrow SVG path
-        try:
-            buttons = await frame.query_selector_all("button")
-            for btn in buttons:
+        # Build the frame search order: cached frame first, then every
+        # other page frame.
+        frames = [frame] + [f for f in self.page.frames if f is not frame]
+
+        for f in frames:
+            for sel in selectors:
                 try:
-                    if not await btn.is_visible():
-                        continue
-                    svg = await btn.query_selector("svg")
-                    if not svg:
-                        continue
-                    path_el = await svg.query_selector("path")
-                    if not path_el:
-                        continue
-                    d_attr = await path_el.get_attribute("d") or ""
-                    # The send arrow has "M11.293 5.293" in its path
-                    if "11.293" in d_attr and "5.293" in d_attr:
+                    btn = await f.query_selector(sel)
+                    if btn and await btn.is_visible():
+                        if f is not frame:
+                            logger.info(
+                                "Send button found in sibling frame (url=%s)",
+                                (f.url or "")[:80],
+                            )
                         return btn
                 except Exception:
                     continue
+
+            # SVG-path fallback per frame.
+            try:
+                buttons = await f.query_selector_all("button")
+                for btn in buttons:
+                    try:
+                        if not await btn.is_visible():
+                            continue
+                        svg = await btn.query_selector("svg")
+                        if not svg:
+                            continue
+                        path_el = await svg.query_selector("path")
+                        if not path_el:
+                            continue
+                        d_attr = await path_el.get_attribute("d") or ""
+                        if "11.293" in d_attr and "5.293" in d_attr:
+                            if f is not frame:
+                                logger.info(
+                                    "Send button found via SVG-path in sibling "
+                                    "frame (url=%s)",
+                                    (f.url or "")[:80],
+                                )
+                            return btn
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # Diagnostic: log per-frame match counts so the next failure
+        # tells us which frame holds (or hides) the button.
+        try:
+            diag = []
+            for f in frames:
+                try:
+                    n = len(await f.query_selector_all('button[aria-label*="Send" i]'))
+                    if n:
+                        diag.append(f"url={(f.url or '')[:60]!r} send-like={n}")
+                except Exception:
+                    continue
+            if diag:
+                logger.warning("Send-button miss; per-frame matches: %s", diag)
         except Exception:
             pass
 
