@@ -216,6 +216,7 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
             "empty_category_judgements": [],
             "duplicate_judgements": {},
             "mistake_count_mismatches": [],
+            "fail_without_mistakes": [],
         },
     }
     scoring_warnings = results["scoring_warnings"]
@@ -248,6 +249,11 @@ def calculate_scores(all_responses: dict, weights: dict, max_mistakes: int = 5) 
             actual_mistakes = (
                 len(mistakes_list) if isinstance(mistakes_list, list) else 0
             )
+            if str(item.get("decision", "")).strip().lower() == "fail" and actual_mistakes == 0:
+                actual_mistakes = max_mistakes
+                scoring_warnings["fail_without_mistakes"].append(
+                    {"category": category, "name": name}
+                )
             if "total_mistakes" in item and item["total_mistakes"] != actual_mistakes:
                 scoring_warnings["mistake_count_mismatches"].append(
                     {
@@ -1598,6 +1604,13 @@ def _finalize_case(
                         f"claimed={m['claimed_total_mistakes']} "
                         f"actual={m['actual_mistakes_len']}"
                     )
+            if scoring_warnings.get("fail_without_mistakes"):
+                logger.info(
+                    "  Decision='fail' with no mistakes recorded "
+                    "(scored as max_mistakes):"
+                )
+                for f in scoring_warnings["fail_without_mistakes"]:
+                    logger.info(f"    {f['category']}/{f['name']}")
 
     if parse_failures:
         result["parse_failures"] = parse_failures
