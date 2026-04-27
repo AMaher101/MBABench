@@ -37,7 +37,7 @@ judge:
   percentage_rounding: 8
 
   # Excel extract mode
-  fast_cell_extraction: true
+  fast_cell_extract: true
 
 
   # Openrouter model to use for judging
@@ -55,6 +55,9 @@ agentic_judge:
   version: 2
   prompt_template: "prompts/agentic_judge_template_2.yaml"
   prompt_version: "2"
+  context_token_limit: 1000000
+  max_rounds: 50
+  read_file_max_cells: 5000
 
 s3:
   # Destination for grading artifacts (contents of judge_results/) uploaded
