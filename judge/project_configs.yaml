@@ -55,4 +55,11 @@ agentic_judge:
   version: 1
   prompt_template: "prompts/agentic_judge_template_1.yaml"
   prompt_version: "1"
+
+s3:
+  # Destination for grading artifacts (contents of judge_results/) uploaded
+  # after each grading. The final raw_files_path is:
+  #   s3://{raw_files_bucket}/{raw_files_prefix}/{timestamp}_{uuid}/
+  raw_files_bucket: "biz-bench"
+  raw_files_prefix: "BizbenchV1/grading"
 # EOF
