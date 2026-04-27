@@ -94,8 +94,8 @@ async def upload_pdf_via_tabai(page, file_paths):
         logger.info("ℹ️ No files to upload; skipping")
         return True  # Not an error
 
-    # Check file sizes (1 MB limit)
-    MAX_FILE_SIZE_MB = 1
+    # Check file sizes (25 MB limit)
+    MAX_FILE_SIZE_MB = 25
     MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
     logger.info(f"📎 Checking {len(file_paths)} file(s) for upload...")

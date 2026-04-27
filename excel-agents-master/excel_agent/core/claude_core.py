@@ -1198,7 +1198,7 @@ class ClaudeCore(AIAgentCore):
         if not file_paths:
             return True
 
-        MAX_SIZE = 1 * 1024 * 1024  # 1 MB
+        MAX_SIZE = 25 * 1024 * 1024  # 25 MB
 
         logger.info(f"📎 Checking {len(file_paths)} file(s) for upload...")
         for fp in file_paths:
