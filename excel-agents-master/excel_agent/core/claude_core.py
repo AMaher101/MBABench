@@ -270,8 +270,12 @@ class ClaudeCore(AIAgentCore):
             # Fallback: toggle via Add-ins ribbon
             logger.info("Close button not found, toggling via Add-ins...")
             for ctx in [self.page] + self.page.frames:
+                # Skip detached frames — clicking against one leaks an
+                # uncaught Playwright Future that asyncio warns about.
+                if hasattr(ctx, "is_detached") and ctx.is_detached():
+                    continue
                 try:
-                    await ctx.click("text=Add-ins", timeout=3000)
+                    await ctx.click('text="Add-ins"', timeout=3000)
                     await asyncio.sleep(2)
                     break
                 except Exception:

@@ -158,10 +158,14 @@ class AIAgentCore(ABC):
             # Click Add-ins
             addins_clicked = False
             for frame in frames:
+                # Skip detached frames — clicking against one leaks an
+                # uncaught Playwright Future that asyncio warns about.
+                if hasattr(frame, "is_detached") and frame.is_detached():
+                    continue
                 try:
-                    await frame.click("text=Add-ins", timeout=3000)
+                    await frame.click('text="Add-ins"', timeout=3000)
                     logger.info("✅ Clicked Add-ins")
-                    self.successful_selectors["addins"] = "FRAME: text=Add-ins"
+                    self.successful_selectors["addins"] = 'FRAME: text="Add-ins"'
                     addins_clicked = True
                     break
                 except Exception:
