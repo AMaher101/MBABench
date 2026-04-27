@@ -861,24 +861,36 @@ class ClaudeCore(AIAgentCore):
         """
         for f in self.page.frames:
             try:
-                buttons = await f.query_selector_all("button")
+                # Prefer to scope to the permission modal — the add-in
+                # ships role="dialog" on its container. Fall back to the
+                # whole frame if no dialog element is present (older UI).
+                dialogs = await f.query_selector_all('[role="dialog"]')
+                scopes = dialogs if dialogs else [f]
+
                 allow_always_btn = None
                 allow_once_btn = None
-
-                for btn in buttons:
-                    try:
-                        text = (await btn.text_content() or "").strip()
-                        if not text:
+                for scope in scopes:
+                    buttons = await scope.query_selector_all("button")
+                    for btn in buttons:
+                        try:
+                            # text_content() concatenates all descendant
+                            # text, including the kbd shortcut suffix
+                            # (e.g. "Allow once" + "Enter" → "Allow onceEnter").
+                            # Use substring matches, never equality.
+                            text = (await btn.text_content() or "").strip()
+                            if not text:
+                                continue
+                            text_lower = text.lower()
+                            if "dangerously" in text_lower and "allow" in text_lower:
+                                if await btn.is_visible():
+                                    allow_always_btn = btn
+                            elif "allow once" in text_lower:
+                                if await btn.is_visible():
+                                    allow_once_btn = btn
+                        except Exception:
                             continue
-                        text_lower = text.lower()
-                        if "dangerously" in text_lower and "allow" in text_lower:
-                            if await btn.is_visible():
-                                allow_always_btn = btn
-                        elif text_lower == "allow once":
-                            if await btn.is_visible():
-                                allow_once_btn = btn
-                    except Exception:
-                        continue
+                    if allow_always_btn or allow_once_btn:
+                        break  # already found in this dialog
 
                 target = allow_always_btn or allow_once_btn
                 if target:
