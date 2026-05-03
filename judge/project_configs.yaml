@@ -6,6 +6,8 @@ keys:
   # Optional: For old DB connection during migration.
   old_database_url: null
 
+  gemini_key: ""
+
 paths:
   # For temporary storage during judging, e.g. for file extraction, intermediate files, etc.
   scratch_path: null
@@ -41,8 +43,9 @@ judge:
 
 
   # Openrouter model to use for judging
-  openrouter_model: "google/gemini-2.5-flash-lite"
+  # openrouter_model: "google/gemini-2.5-flash-lite"
   # openrouter_model: "google/gemini-2.5-pro"
+  openrouter_model: "google/gemini-3-flash-preview"
 
   check_order: "Accuracy,Formula,Formatting"
 
