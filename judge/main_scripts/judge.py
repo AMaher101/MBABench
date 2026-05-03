@@ -2672,6 +2672,42 @@ def agentic_judge_case(
                 )
                 time.sleep(wait)
                 continue  # retry same round without advancing round_idx
+
+            # OpenRouter sometimes wraps upstream provider errors in a 200 OK
+            # envelope with choices=null + a top-level `error` field. The SDK
+            # parses that without raising, so we have to detect it manually
+            # and retry the same round.
+            if not response.choices:
+                err_detail = (
+                    (response.model_extra or {}).get("error")
+                    or getattr(response, "error", None)
+                    or "no error field"
+                )
+                api_retries += 1
+                if api_retries > max_api_retries:
+                    logger.error(
+                        f"    Giving up after {max_api_retries} retries: "
+                        f"empty choices. err={err_detail}"
+                    )
+                    state.log_event(
+                        "empty_choices_giveup",
+                        error=str(err_detail)[:500],
+                        wire_chars=wire_chars_at_call,
+                    )
+                    break
+                wait = min(2**api_retries + 1, 30)
+                logger.warning(
+                    f"    Empty choices (round {state.round}, retry "
+                    f"{api_retries}/{max_api_retries}): err={err_detail}. "
+                    f"Retrying in {wait}s..."
+                )
+                state.log_event(
+                    "empty_choices",
+                    error=str(err_detail)[:500],
+                    wire_chars=wire_chars_at_call,
+                )
+                time.sleep(wait)
+                continue  # retry same round without advancing round_idx
             api_retries = 0
 
             usage = response.usage
