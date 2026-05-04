@@ -1,8 +1,0 @@
-# Rerun for the 1 modeloff task whose v8 claude_excel_agent attempt was an empty workbook.
-# Original attempt id=4894 (task_id=396) was downloaded as ['Sheet1'] with 0 cells;
-# marked agent_failed=true post-hoc on 2026-05-04. This rerun should produce a real attempt.
-
-task_source: "modeloff"
-
-tasks:
-  - "MO18 Round 2 - Sec 2 - Winning Ways"
