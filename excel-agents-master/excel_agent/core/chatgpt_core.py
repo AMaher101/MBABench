@@ -808,34 +808,68 @@ class ChatGPTCore(AIAgentCore):
                 p = Path(fp)
                 logger.info(f"📤 Uploading {i + 1}/{len(file_paths)}: {p.name}")
 
-                plus_btn = await self._find_plus_button(frame)
-                if not plus_btn:
-                    logger.error("❌ Plus (+) button not found for file upload")
-                    await self._dump_upload_dom("chatgpt_plus_missing")
-                    return False
-
-                logger.info("✅ Found Plus (+) button — clicking...")
-                await plus_btn.click()
-                # Let the popover render. ChatGPT's `+` now opens a menu
-                # (Upload files / Skills / Apps) instead of firing the file
-                # chooser directly, so we click the menuitem below.
-                await asyncio.sleep(0.4)
+                # Multi-file uploads (3rd+) sometimes fail because a stale
+                # "+" popover from the previous file is still open and the
+                # next click toggles it shut instead of opening a fresh one.
+                # Press Escape to ensure clean state before each upload.
+                if i > 0:
+                    try:
+                        await self.page.keyboard.press("Escape")
+                        await asyncio.sleep(0.2)
+                    except Exception:
+                        pass
 
                 uploaded = False
-                upload_item = await self._find_chatgpt_upload_menuitem(frame)
-                if upload_item:
-                    logger.info("✅ Found 'Upload files' menu item — clicking...")
-                    try:
-                        async with self.page.expect_file_chooser(timeout=8000) as fc:
-                            await upload_item.click()
-                        chooser = await fc.value
-                        await chooser.set_files([fp])
-                        logger.info(f"   ✅ Selected: {p.name}")
-                        uploaded = True
-                    except Exception as e:
-                        logger.warning(
-                            f"⚠️ File chooser did not fire after menuitem click: {e}"
+
+                # Try the menuitem path up to 3 times — the popover can fail
+                # to render on first click after prior uploads.
+                for menuitem_attempt in range(3):
+                    plus_btn = await self._find_plus_button(frame)
+                    if not plus_btn:
+                        if menuitem_attempt == 0:
+                            logger.error("❌ Plus (+) button not found for file upload")
+                            await self._dump_upload_dom("chatgpt_plus_missing")
+                            return False
+                        break
+
+                    if menuitem_attempt == 0:
+                        logger.info("✅ Found Plus (+) button — clicking...")
+                    else:
+                        logger.info(
+                            f"🔁 Retrying menuitem path (attempt {menuitem_attempt + 1}/3)..."
                         )
+                    await plus_btn.click()
+                    # Let the popover render. ChatGPT's `+` opens a menu
+                    # (Upload files / Skills / Apps) instead of firing the
+                    # file chooser directly.
+                    await asyncio.sleep(0.4 + 0.3 * menuitem_attempt)
+
+                    upload_item = await self._find_chatgpt_upload_menuitem(frame)
+                    if upload_item:
+                        if menuitem_attempt == 0:
+                            logger.info(
+                                "✅ Found 'Upload files' menu item — clicking..."
+                            )
+                        try:
+                            async with self.page.expect_file_chooser(
+                                timeout=8000
+                            ) as fc:
+                                await upload_item.click()
+                            chooser = await fc.value
+                            await chooser.set_files([fp])
+                            logger.info(f"   ✅ Selected: {p.name}")
+                            uploaded = True
+                            break
+                        except Exception as e:
+                            logger.warning(
+                                f"⚠️ File chooser did not fire after menuitem click: {e}"
+                            )
+                    # Close any stale popover before retrying.
+                    try:
+                        await self.page.keyboard.press("Escape")
+                        await asyncio.sleep(0.3)
+                    except Exception:
+                        pass
 
                 if not uploaded:
                     # Fallback 1: older `+`-is-the-chooser behaviour, in case
@@ -857,8 +891,12 @@ class ChatGPTCore(AIAgentCore):
                         pass
 
                 if not uploaded:
-                    # Fallback 2: hidden <input type="file">.
-                    if await self._set_files_on_hidden_input(fp):
+                    # Fallback 2: hidden <input type="file">. Scope to the
+                    # ChatGPT frame so we don't accidentally upload to one
+                    # of Excel's own file inputs (which would succeed
+                    # silently but leave the visible UI without a file
+                    # chip, blocking the send button later).
+                    if await self._set_files_on_hidden_input(fp, scope=frame):
                         logger.info(
                             f"   ✅ Selected via hidden input fallback: {p.name}"
                         )
@@ -921,13 +959,30 @@ class ChatGPTCore(AIAgentCore):
 
         return None
 
-    async def _set_files_on_hidden_input(self, file_path) -> bool:
+    async def _set_files_on_hidden_input(self, file_path, scope=None) -> bool:
         """Find any ``<input type="file">`` (including hidden) and set files.
 
         Bypasses the native file-chooser dialog entirely — some React chat UIs
         render a hidden input that the visible `+` button proxies to.
+
+        ``scope`` (optional) restricts the search to the given frame and its
+        child frames. When omitted, every page frame is searched. Scoping is
+        important on multi-frame pages (e.g. the ChatGPT add-in inside Excel
+        Online) — uploading to the wrong frame's input succeeds silently but
+        leaves the visible UI unaware of the file, which then blocks the
+        send button.
         """
-        for ctx in list(self.page.frames) + [self.page]:
+        if scope is not None:
+            scoped = [scope]
+            scoped.extend(
+                f
+                for f in self.page.frames
+                if f is not scope and f.parent_frame is scope
+            )
+            ctxs = scoped
+        else:
+            ctxs = list(self.page.frames) + [self.page]
+        for ctx in ctxs:
             try:
                 inputs = await ctx.query_selector_all('input[type="file"]')
             except Exception:
