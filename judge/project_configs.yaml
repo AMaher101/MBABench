@@ -28,8 +28,8 @@ judge:
   prompt_version: "6.4"
 
   # The rubric file containing subdimension and description
-  rubric: "prompts/rubrics/rubric_7.json"
-  rubric_version: "7"
+  rubric: "prompts/rubrics/rubric_8.json"
+  rubric_version: "8"
   rubric_weight: "prompts/rubrics/rubric_6_weights.json"
   rubric_weight_version: "6"
   rubric_max_mistakes: 1
