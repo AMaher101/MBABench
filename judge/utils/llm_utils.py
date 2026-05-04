@@ -1,15 +1,79 @@
 """LLM communication utilities for the judge system."""
 
 import random
+import threading
 import time
 
+from openai import OpenAI
+
 from .logger import logger
+from .misc_utils import load_env_var
 
 # Retry constants
 BASE_DELAY = 1
 MAX_DELAY = 60
 RATE_LIMIT_DELAY = 30
 MAX_ATTEMPTS = 10
+
+# ---- Provider routing ------------------------------------------------------
+# `google/*` model slugs are routed to Gemini's OpenAI-compatible endpoint
+# using KEYS_GEMINI_KEY; everything else goes to OpenRouter. Clients are
+# cached per-provider so the underlying httpx connection pool is reused
+# across calls (the OpenAI SDK is thread-safe).
+
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_GEMINI_PREFIX = "google/"
+
+_clients: dict[str, OpenAI] = {}
+_clients_lock = threading.Lock()
+
+
+def is_gemini_model(model: str) -> bool:
+    """True iff the model id should be routed to Gemini's API directly."""
+    return model.startswith(_GEMINI_PREFIX)
+
+
+def to_api_model_id(model: str) -> str:
+    """Strip provider prefixes the wire endpoint doesn't expect.
+
+    Gemini's compat endpoint takes bare names (`gemini-3-flash-preview`),
+    not OpenRouter's `google/...` slug. OpenRouter takes the slug as-is.
+    The full slug stays the canonical id everywhere else (cost lookup,
+    metrics, DB rows) so only this function strips it.
+    """
+    if is_gemini_model(model):
+        return model[len(_GEMINI_PREFIX) :]
+    return model
+
+
+def get_client(model: str) -> OpenAI:
+    """Return a cached OpenAI-compatible client matching the model's provider.
+
+    First call per provider builds the client; subsequent calls are dict
+    lookups. Safe to call from worker threads — the lock only contends
+    on cold start.
+    """
+    provider = "gemini" if is_gemini_model(model) else "openrouter"
+    client = _clients.get(provider)
+    if client is not None:
+        return client
+    with _clients_lock:
+        client = _clients.get(provider)
+        if client is not None:
+            return client
+        if provider == "gemini":
+            client = OpenAI(
+                base_url=_GEMINI_BASE_URL,
+                api_key=load_env_var("KEYS_GEMINI_KEY", required=True),
+            )
+        else:
+            client = OpenAI(
+                base_url=_OPENROUTER_BASE_URL,
+                api_key=load_env_var("KEYS_OPEN_ROUTER_API_KEY", required=True),
+            )
+        _clients[provider] = client
+        return client
 
 # Pricing per 1M tokens (input, output) for common OpenRouter models
 _MODEL_PRICING = {
@@ -24,6 +88,8 @@ _MODEL_PRICING = {
     "google/gemini-2.5-pro": (1.25, 10.0),
     "google/gemini-2.5-flash": (0.15, 0.60),
     "google/gemini-2.5-flash-lite": (0.075, 0.30),
+    "google/gemini-3-flash-preview": (0.5, 3.0),
+    "google/gemini-3.1-pro-preview": (2.0, 12.0),
 }
 _DEFAULT_PRICING = (10.0, 30.0)  # Fallback pricing per 1M tokens
 
@@ -86,7 +152,12 @@ def backoff(attempt):
 
 
 def robust_send_message(
-    client, messages, model, system_instruction=None, response_format=None
+    client,
+    messages,
+    model,
+    system_instruction=None,
+    response_format=None,
+    reasoning_effort=None,
 ):
     """Send a message to OpenRouter with exponential backoff retry logic.
 
@@ -96,6 +167,9 @@ def robust_send_message(
         model: Model identifier string
         system_instruction: Optional system message to prepend
         response_format: Optional response format dict (e.g., {"type": "json_object"})
+        reasoning_effort: Optional reasoning effort level passed verbatim to the
+            API (`"low"`, `"medium"`, `"high"`, `"minimal"`, or `"none"`).
+            Models without thinking support may reject the kwarg.
 
     Returns:
         tuple: (response, metrics_dict) where metrics_dict contains:
@@ -121,9 +195,11 @@ def robust_send_message(
 
             size_info = calculate_message_size(api_messages)
 
-            kwargs = {"model": model, "messages": api_messages}
+            kwargs = {"model": to_api_model_id(model), "messages": api_messages}
             if response_format:
                 kwargs["response_format"] = response_format
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
 
             response = client.chat.completions.create(**kwargs)
 
