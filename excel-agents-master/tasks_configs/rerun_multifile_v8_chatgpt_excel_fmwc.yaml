@@ -1,0 +1,15 @@
+# Rerun for the 1 fmwc task whose v8 chatgpt_excel_agent attempts (12 of them)
+# all failed because the agent's upload step couldn't handle a 3rd file in
+# Task/. Fixed in chatgpt_core.upload_files (commit 8c3367e on main /
+# 3bcc0ad on excel-agents-master): Escape stale popovers, retry the menuitem
+# path up to 3 times, scope hidden-input fallback to the ChatGPT frame.
+#
+# Will-You-Be-Mine-zmexkc Task/ contains 3 PDFs:
+#   - Speed It Up (Will You Be Mine) - Case Materials.pdf
+#   - Speed It Up (Will You Be Mine) - EmailAttachment.pdf
+#   - Speed It Up (Will You Be Mine) - Questions.pdf
+
+task_source: "fmwc"
+
+tasks:
+  - "Will-You-Be-Mine-zmexkc"
