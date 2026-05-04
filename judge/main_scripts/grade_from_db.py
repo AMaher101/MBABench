@@ -33,7 +33,7 @@ sys.path.insert(0, str(_judge_root))
 import boto3
 import psycopg2
 import psycopg2.extras
-from openai import OpenAI
+from utils.llm_utils import get_client
 from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
     load_env_var,
@@ -508,6 +508,7 @@ def grade_single_attempt(
     max_tool_rounds=20,
     no_s3_upload=False,
     on_overflow="route_to_agentic",
+    reasoning_effort=None,
 ):
     """Grade a single attempt. Returns a result dict."""
     attempt_id = attempt["attempt_id"]
@@ -571,6 +572,7 @@ def grade_single_attempt(
                 ignore_sheets=ignore_sheets,
                 carry_over_context=carry_over_context,
                 max_tool_rounds=max_tool_rounds,
+                reasoning_effort=reasoning_effort,
             )
             result = agentic_judge_case(**agentic_kwargs)
         else:
@@ -594,6 +596,7 @@ def grade_single_attempt(
                 agentic_template_path=agentic_template_path,
                 carry_over_context=carry_over_context,
                 max_tool_rounds=max_tool_rounds,
+                reasoning_effort=reasoning_effort,
             )
             if solution_char_limit is not None:
                 judge_kwargs["solution_context_char_limit"] = solution_char_limit
@@ -939,12 +942,7 @@ def main(args):
             logger.info(f"\nTotal: {len(attempts)} attempts")
             return
 
-        # Init OpenRouter client
-        api_key = load_env_var("KEYS_OPEN_ROUTER_API_KEY", required=True)
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
-        )
+        client = get_client(model)
 
         # Grade each attempt
         # Persistent caches for extracted CSVs — avoids re-extracting across runs
@@ -1062,6 +1060,7 @@ def main(args):
                 max_tool_rounds=args.max_tool_rounds,
                 no_s3_upload=args.no_s3_upload,
                 on_overflow=args.on_overflow,
+                reasoning_effort=args.reasoning_effort,
             )
             results.append(result)
 
@@ -1372,6 +1371,17 @@ Examples:
             "judge with the unshortened CSVs as cached input. 'shorten' uses "
             "the legacy lossy CSV-shortening path. Ignored when --agentic is "
             "set or the task is in TASKS_TO_GRADE_WITH_AGENTIC_JUDGE."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="minimal",
+        choices=["none", "minimal", "low", "medium", "high"],
+        help=(
+            "Reasoning/thinking effort passed to the judge model "
+            "(default: minimal). Models without thinking support may reject "
+            "the kwarg."
         ),
     )
 

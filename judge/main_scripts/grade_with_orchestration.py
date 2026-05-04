@@ -51,12 +51,12 @@ from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
-from openai import OpenAI
 
 # Ensure judge/ is on the path for local imports
 _judge_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_judge_root))
 
+from utils.llm_utils import get_client
 from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
     load_env_var,
@@ -258,6 +258,15 @@ def publish_cache_dir(src_dir, final_dir):
         return False
 
 
+def _fmt_dur(s):
+    s = int(s)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
 # ---------------------------------------------------------------------------
 # Dry-run preview
 # ---------------------------------------------------------------------------
@@ -327,6 +336,7 @@ class GradeOrchestrator:
         no_db_write,
         no_s3_upload,
         on_overflow,
+        reasoning_effort,
     ):
         self.workers = workers
         self.model = model
@@ -350,10 +360,10 @@ class GradeOrchestrator:
         self.no_db_write = no_db_write
         self.no_s3_upload = no_s3_upload
         self.on_overflow = on_overflow
+        self.reasoning_effort = reasoning_effort
 
-        # OpenAI / OpenRouter client — thread-safe per SDK.
-        api_key = load_env_var("KEYS_OPEN_ROUTER_API_KEY", required=True)
-        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+        # Provider-routed, cached client (thread-safe per SDK).
+        self.client = get_client(model)
 
         # Persistent CSV cache roots
         self.solution_cache_base = (
@@ -380,6 +390,14 @@ class GradeOrchestrator:
 
         self.results: list[dict] = []
         self._results_lock = threading.Lock()
+
+        # Live progress counters. Updated under _results_lock from worker
+        # threads; read by the per-completion progress log line.
+        self._completed = 0
+        self._succeeded = 0
+        self._failed = 0
+        self._total = 0
+        self._start_time = 0.0
 
     # ---- cache helpers ----
 
@@ -548,6 +566,7 @@ class GradeOrchestrator:
                 max_tool_rounds=self.max_tool_rounds,
                 no_s3_upload=self.no_s3_upload,
                 on_overflow=self.on_overflow,
+                reasoning_effort=self.reasoning_effort,
             )
         except Exception as e:
             logger.error(f"  [attempt {attempt_id}] grade_single_attempt raised: {e}")
@@ -581,12 +600,38 @@ class GradeOrchestrator:
 
         with self._results_lock:
             self.results.append(result)
+            self._completed += 1
+            if result.get("success"):
+                self._succeeded += 1
+            else:
+                self._failed += 1
+            completed = self._completed
+            succeeded = self._succeeded
+            failed = self._failed
+            total = self._total
+            elapsed = time.monotonic() - self._start_time
+
+        status = "OK" if result.get("success") else "FAILED"
+        # Warm-up gate: skip ETA until we've cleared at least one full pool
+        # cycle so the estimate isn't dominated by cold-cache outliers.
+        if completed >= max(3, self.workers) and elapsed > 0:
+            eta_sec = (total - completed) * (elapsed / completed)
+            timing = f"elapsed={_fmt_dur(elapsed)} eta={_fmt_dur(eta_sec)}"
+        else:
+            timing = f"elapsed={_fmt_dur(elapsed)} eta=…"
+        logger.info(
+            f"[progress {completed}/{total}] OK={succeeded} FAIL={failed} — "
+            f"{timing} — attempt {attempt_id} task {task_id} {status}"
+        )
 
         return result
 
     # ---- run ----
 
     def run(self, attempts):
+        self._total = len(attempts)
+        self._start_time = time.monotonic()
+
         self._writer_thread = threading.Thread(
             target=self._writer_loop, name="grading-writer", daemon=False
         )
@@ -866,6 +911,17 @@ def main():
             "set or the task is in TASKS_TO_GRADE_WITH_AGENTIC_JUDGE."
         ),
     )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="minimal",
+        choices=["none", "minimal", "low", "medium", "high"],
+        help=(
+            "Reasoning/thinking effort passed to the judge model "
+            "(default: minimal). Models without thinking support may reject "
+            "the kwarg."
+        ),
+    )
 
     # Execution modes
     parser.add_argument("--dry-run", action="store_true")
@@ -1009,6 +1065,7 @@ def main():
         no_db_write=args.no_db_write,
         no_s3_upload=args.no_s3_upload,
         on_overflow=args.on_overflow,
+        reasoning_effort=args.reasoning_effort,
     )
 
     orch.run(hydrated)

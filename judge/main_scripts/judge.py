@@ -18,7 +18,12 @@ from utils.excel_utils import (
     shorten_attempt_csv_files,
     shorten_solution_csv_files,
 )
-from utils.llm_utils import calculate_cost, robust_send_message
+from utils.llm_utils import (
+    calculate_cost,
+    get_client,
+    robust_send_message,
+    to_api_model_id,
+)
 from utils.logger import add_log_file, logger, remove_log_file
 from utils.misc_utils import (
     dump_messages_yaml,
@@ -373,6 +378,7 @@ def judge_case(
     agentic_template_path: str = None,
     carry_over_context: bool = True,
     max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
+    reasoning_effort: str | None = None,
 ):
     """Execute the complete judging workflow for a case using OpenRouter.
 
@@ -548,6 +554,7 @@ def judge_case(
             attempt_sheet_name_filter=attempt_sheet_name_filter,
             carry_over_context=carry_over_context,
             max_tool_rounds=max_tool_rounds,
+            reasoning_effort=reasoning_effort,
             auto_routed=True,
         )
 
@@ -971,6 +978,7 @@ def judge_case(
                 conversation_messages,
                 model,
                 response_format={"type": "json_object"},
+                reasoning_effort=reasoning_effort,
             )
 
             response_text = response.choices[0].message.content
@@ -1157,6 +1165,7 @@ def judge_case(
         solution_context_reduced=solution_context_reduced,
         attempt_context_reduced=attempt_context_reduced,
         context_reduced_details=context_reduced_details,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -1400,6 +1409,7 @@ def _finalize_case(
     context_reduced_details=None,
     agentic=False,
     auto_routed=False,
+    reasoning_effort=None,
 ):
     """Shared finalization: save judgement, calculate scores, write metadata."""
     output_dir = Path(output_dir)
@@ -1471,6 +1481,7 @@ def _finalize_case(
     metadata_dict = {
         "task_folder": task_folder_name,
         "grader_model": model,
+        "judge_reasoning": reasoning_effort,
         "judge_mode": "agentic" if agentic else "non-agentic",
         "auto_routed": auto_routed,
         "attempt_model": attempt_model,
@@ -2419,6 +2430,7 @@ def agentic_judge_case(
     carry_over_context: bool = True,
     max_tool_rounds: int = AGENTIC_JUDGE_MAX_ROUNDS,
     auto_routed: bool = False,
+    reasoning_effort: str | None = None,
 ):
     """Execute the judging workflow using an agentic multi-turn approach.
 
@@ -2635,11 +2647,14 @@ def agentic_judge_case(
             wire_chars_at_call = _wire_char_total(state.messages)
 
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=state.messages,
-                    tools=AGENTIC_JUDGE_TOOLS,
-                )
+                _create_kwargs = {
+                    "model": to_api_model_id(model),
+                    "messages": state.messages,
+                    "tools": AGENTIC_JUDGE_TOOLS,
+                }
+                if reasoning_effort is not None:
+                    _create_kwargs["reasoning_effort"] = reasoning_effort
+                response = client.chat.completions.create(**_create_kwargs)
             except Exception as e:
                 err_str = str(e)
                 # Context-length errors (400) are not retryable — the same
@@ -2869,11 +2884,14 @@ def agentic_judge_case(
                 )
 
                 try:
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=state.messages,
-                        tools=finalize_tools,
-                    )
+                    _create_kwargs = {
+                        "model": to_api_model_id(model),
+                        "messages": state.messages,
+                        "tools": finalize_tools,
+                    }
+                    if reasoning_effort is not None:
+                        _create_kwargs["reasoning_effort"] = reasoning_effort
+                    response = client.chat.completions.create(**_create_kwargs)
                 except Exception as e:
                     logger.error(f"    Forced finalization API error: {e}. Stopping.")
                     state.log_event("forced_finalization_error", error=str(e)[:500])
@@ -3082,6 +3100,7 @@ def agentic_judge_case(
         parse_failures=parse_failures,
         agentic=True,
         auto_routed=auto_routed,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -3124,12 +3143,7 @@ def main(args):
         )
     )
 
-    # Initialize OpenRouter client
-    api_key = load_env_var("KEYS_OPEN_ROUTER_API_KEY", required=True)
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
-    )
+    client = get_client(args.model)
 
     if args.agentic:
         agentic_judge_case(
@@ -3147,6 +3161,7 @@ def main(args):
             ignore_sheets=args.ignore_sheets,
             carry_over_context=args.carry_over_context,
             max_tool_rounds=args.max_tool_rounds,
+            reasoning_effort=args.reasoning_effort,
         )
     else:
         judge_case(
@@ -3169,6 +3184,7 @@ def main(args):
             agentic_template_path=agentic_template_path,
             carry_over_context=args.carry_over_context,
             max_tool_rounds=args.max_tool_rounds,
+            reasoning_effort=args.reasoning_effort,
         )
 
 
@@ -3284,6 +3300,17 @@ if __name__ == "__main__":
             "char budget. 'route_to_agentic' (default) hands off to the agentic "
             "judge with the unshortened CSVs as cached input. 'shorten' uses "
             "the legacy lossy CSV-shortening path."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="minimal",
+        choices=["none", "minimal", "low", "medium", "high"],
+        help=(
+            "Reasoning/thinking effort passed to the judge model "
+            "(default: minimal). Models without thinking support may reject "
+            "the kwarg."
         ),
     )
 
