@@ -56,8 +56,8 @@ judge:
 
 agentic_judge:
   version: 2
-  prompt_template: "prompts/agentic_judge_template_2.yaml"
-  prompt_version: "2"
+  prompt_template: "prompts/agentic_judge_template_3.yaml"
+  prompt_version: "3"
   context_token_limit: 1000000
   max_rounds: 50
   read_file_max_cells: 5000
