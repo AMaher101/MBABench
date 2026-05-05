@@ -1,12 +1,21 @@
 """
 Check which agent models have completed valid attempts for tasks.
 
-Valid attempts: agent_failed = false AND deprecated = false.
+Valid attempts must satisfy:
+  - agent_failed = false
+  - deprecated = false
+  - attempt_files is a non-empty JSON array containing exactly one *.xlsx
+    entry (additional non-xlsx files in the array are allowed)
+  - prompt_version matches DEFAULT_MODELS_PROMPT_VERSION (if the model is listed)
+
+Attempts that fail any of the above are reported as "invalid" with a reason
+(e.g. agent_failed, no attempt_files, no xlsx file, expected 1 xlsx file got
+N, prompt_v mismatch) so missing tasks can be distinguished from broken ones.
 
 Usage:
     source judge/project_configs.sh
 
-    # No task flag - use DEFAULT_TASK_IDS
+    # No task flag - use DEFAULT_TASK_IDS, or all non-deprecated tasks if empty
     python judge/operation_scripts/check_attempt_completion.py
 
     # Single task - list unique agents with valid attempts
@@ -44,13 +53,17 @@ load_project_configs()
 # models are considered unless overridden by --models / --all-models.
 # ---------------------------------------------------------------------------
 DEFAULT_MODELS: list[str] = [
-    "GPT-5.4 (Extended Pro)",
-    "GPT-5.4 (Agent)",
-    "chatgpt_excel_agent",
-    "claude_excel_agent",
-    "claude_web",
-    "openpyxl_anthropic/claude-opus-4-6",
-    "openpyxl_openai/gpt-5.4",
+    # "GPT-5.4 (Extended Pro)",
+    # "GPT-5.4 (Agent)",
+    # "chatgpt_pro",
+    # "chatgpt_agent",
+    # "chatgpt_web_pro",
+    # "chatgpt_excel_agent",
+    # "claude_excel_agent",
+    # "claude_web",
+    "openpyxl_allenai/olmo-3.1-32b-instruct",
+    # "openpyxl_anthropic/claude-opus-4-6",
+    # "openpyxl_openai/gpt-5.4",
 ]
 
 # Optional: per-model prompt_version filter. When a model appears here, only
@@ -72,17 +85,17 @@ DEFAULT_MODELS_PROMPT_VERSION: dict[str, int] = {
 # are used unless overridden by --task-id / --task-ids / --all-tasks.
 # ---------------------------------------------------------------------------
 DEFAULT_TASK_IDS: list[int] = [
-    61,
-    108,
-    166,
-    168,
-    169,
-    187,
-    222,
-    321,
-    327,
-    355,
-    389,
+    # 61,
+    # 108,
+    # 166,
+    # 168,
+    # 169,
+    # 187,
+    # 222,
+    # 321,
+    # 327,
+    # 355,
+    # 389,
 ]
 
 
@@ -94,12 +107,45 @@ def get_db_connection():
     return psycopg2.connect(db_url)
 
 
-def fetch_valid_attempts(conn, task_ids, models=None, prompt_versions=None):
-    """Return valid attempts for the given task ids, optionally filtered by models.
+def classify_attempt(row, prompt_versions=None):
+    """Return (is_valid, reason). reason is None when the attempt is valid."""
+    if row.get("agent_failed"):
+        return False, "agent_failed=true"
+    if row.get("deprecated"):
+        return False, "deprecated=true"
+
+    files = row.get("attempt_files")
+    if not isinstance(files, list) or len(files) == 0:
+        return False, "no attempt_files"
+
+    xlsx_count = sum(
+        1 for f in files if isinstance(f, str) and f.lower().endswith(".xlsx")
+    )
+    if xlsx_count == 0:
+        return False, f"no xlsx file (got {len(files)} non-xlsx)"
+    if xlsx_count > 1:
+        return False, f"expected 1 xlsx file, got {xlsx_count}"
+
+    if prompt_versions:
+        model = row["agent_model_name"]
+        if model in prompt_versions:
+            want = prompt_versions[model]
+            got = row.get("prompt_version")
+            if got != want:
+                return False, f"prompt_v={got}, expected {want}"
+
+    return True, None
+
+
+def fetch_attempts(conn, task_ids, models=None, prompt_versions=None):
+    """Return (valid_rows, invalid_rows) for the given task ids.
+
+    Invalid rows include a 'reason' field describing why the attempt is invalid
+    (agent_failed, deprecated, wrong file count, non-xlsx, prompt_v mismatch).
 
     Args:
         prompt_versions: dict mapping model name -> required prompt_version.
-            Attempts for listed models are kept only if their prompt_version matches.
+            Mismatches surface as invalid-with-reason rather than being dropped.
     """
     query = """
         SELECT ta.id AS attempt_id,
@@ -110,13 +156,12 @@ def fetch_valid_attempts(conn, task_ids, models=None, prompt_versions=None):
                ta.time_taken_min,
                ta.cost,
                ta.start_time,
-               ta.end_time
+               ta.end_time,
+               ta.agent_failed,
+               ta.deprecated,
+               ta.attempt_files
         FROM task_attempts ta
-        WHERE ta.agent_failed = false
-          AND ta.deprecated = false
-          AND ta.attempt_files IS NOT NULL
-          AND ta.attempt_files::text NOT IN ('null', '[]', '{}')
-          AND ta.task_id = ANY(%s)
+        WHERE ta.task_id = ANY(%s)
     """
     params: list = [task_ids]
 
@@ -130,15 +175,17 @@ def fetch_valid_attempts(conn, task_ids, models=None, prompt_versions=None):
         cur.execute(query, params)
         rows = cur.fetchall()
 
-    if prompt_versions:
-        rows = [
-            r
-            for r in rows
-            if r["agent_model_name"] not in prompt_versions
-            or r["prompt_version"] == prompt_versions[r["agent_model_name"]]
-        ]
+    valid: list[dict] = []
+    invalid: list[dict] = []
+    for row in rows:
+        is_valid, reason = classify_attempt(row, prompt_versions)
+        if is_valid:
+            valid.append(row)
+        else:
+            row["reason"] = reason
+            invalid.append(row)
 
-    return rows
+    return valid, invalid
 
 
 def fetch_all_agent_models(conn, models=None):
@@ -199,36 +246,56 @@ def format_attempt_detail(row):
     return ", ".join(parts)
 
 
-def print_single_task(task_id, task_names, attempts):
+def print_single_task(task_id, task_names, valid_attempts, invalid_attempts):
     """Print details for a single task."""
     name = task_names.get(task_id, "Unknown")
     print(f"\nTask {task_id}: {name}")
     print("-" * 60)
 
-    # Group by model
+    # Group valid by model
     by_model: dict[str, list[dict]] = {}
-    for row in attempts:
+    for row in valid_attempts:
         by_model.setdefault(row["agent_model_name"], []).append(row)
 
-    if not by_model:
-        print("  No valid attempts found.")
+    # Group invalid by model
+    invalid_by_model: dict[str, list[dict]] = {}
+    for row in invalid_attempts:
+        invalid_by_model.setdefault(row["agent_model_name"], []).append(row)
+
+    if not by_model and not invalid_by_model:
+        print("  No attempts found.")
         return
 
-    for model, rows in sorted(by_model.items()):
-        print(f"  {model}  ({len(rows)} attempt{'s' if len(rows) != 1 else ''})")
-        for row in rows:
-            print(f"    - {format_attempt_detail(row)}")
+    if by_model:
+        print("Valid attempts:")
+        for model, rows in sorted(by_model.items()):
+            print(f"  {model}  ({len(rows)} attempt{'s' if len(rows) != 1 else ''})")
+            for row in rows:
+                print(f"    - {format_attempt_detail(row)}")
 
-    print(f"\nTotal unique models: {len(by_model)}")
+    if invalid_by_model:
+        print("\nInvalid attempts:")
+        for model, rows in sorted(invalid_by_model.items()):
+            print(f"  {model}  ({len(rows)} attempt{'s' if len(rows) != 1 else ''})")
+            for row in rows:
+                print(f"    - {format_attempt_detail(row)}  [{row['reason']}]")
+
+    print(f"\nTotal unique models with valid attempts: {len(by_model)}")
 
 
-def print_multi_task(task_ids, task_names, attempts, all_models):
+def print_multi_task(task_ids, task_names, valid_attempts, invalid_attempts, all_models):
     """Print a completion matrix for multiple tasks."""
     # Build lookup: (task_id, model) -> [attempt rows]
     lookup: dict[tuple[int, str], list[dict]] = {}
-    for row in attempts:
+    for row in valid_attempts:
         key = (row["task_id"], row["agent_model_name"])
         lookup.setdefault(key, []).append(row)
+
+    # Build invalid lookup: (task_id, model) -> [reason, ...]
+    invalid_lookup: dict[tuple[int, str], list[str]] = {}
+    for row in invalid_attempts:
+        key = (row["task_id"], row["agent_model_name"])
+        invalid_lookup.setdefault(key, []).append(row["reason"])
 
     # Header
     print(f"\nCompletion matrix ({len(task_ids)} tasks x {len(all_models)} models)")
@@ -256,8 +323,36 @@ def print_multi_task(task_ids, task_names, attempts, all_models):
                     print(f"        - {format_attempt_detail(row)}")
 
         if missing:
-            missing_str = ", ".join(str(t) for t in missing)
-            print(f"    Missing tasks: [{missing_str}]")
+            parts = []
+            for tid in missing:
+                reasons = invalid_lookup.get((tid, model), [])
+                if reasons:
+                    unique = list(dict.fromkeys(reasons))
+                    parts.append(f"{tid} ({'; '.join(unique)})")
+                else:
+                    parts.append(str(tid))
+            print(f"    Missing tasks: [{', '.join(parts)}]")
+
+    # Invalid attempts grouped by reason, per model
+    print("\n" + "=" * 80)
+    print("Invalid attempts by reason")
+    print("=" * 80)
+
+    by_model_reasons: dict[str, dict[str, int]] = {}
+    for (_tid, model), reasons in invalid_lookup.items():
+        bucket = by_model_reasons.setdefault(model, {})
+        for r in reasons:
+            bucket[r] = bucket.get(r, 0) + 1
+
+    if not by_model_reasons:
+        print("\n  (none)")
+    else:
+        for model in sorted(by_model_reasons):
+            counts = by_model_reasons[model]
+            total = sum(counts.values())
+            print(f"\n  {model}  ({total} invalid)")
+            for reason, n in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+                print(f"    {n:>4}  {reason}")
 
     # Per-(model, prompt_version) missing tasks
     print("\n" + "=" * 80)
@@ -389,12 +484,15 @@ def main():
         task_ids = DEFAULT_TASK_IDS
         print(f"Using DEFAULT_TASK_IDS ({len(task_ids)} tasks).")
     else:
+        task_ids = fetch_all_task_ids(conn)
+        if not task_ids:
+            print("No non-deprecated tasks found in the database.")
+            conn.close()
+            return
         print(
-            "Error: no tasks specified. Provide --task-id, --task-ids, --all-tasks, "
-            "or set DEFAULT_TASK_IDS."
+            f"No tasks specified; defaulting to all {len(task_ids)} "
+            "non-deprecated tasks."
         )
-        conn.close()
-        sys.exit(1)
     try:
         task_names = fetch_task_names(conn, task_ids)
 
@@ -403,13 +501,19 @@ def main():
         if missing:
             print(f"Warning: task IDs not found in database: {missing}")
 
-        attempts = fetch_valid_attempts(conn, task_ids, models, prompt_versions)
+        valid_attempts, invalid_attempts = fetch_attempts(
+            conn, task_ids, models, prompt_versions
+        )
 
         if args.task_id and not args.all_tasks:
-            print_single_task(args.task_id, task_names, attempts)
+            print_single_task(
+                args.task_id, task_names, valid_attempts, invalid_attempts
+            )
         else:
             all_models = fetch_all_agent_models(conn, models)
-            print_multi_task(task_ids, task_names, attempts, all_models)
+            print_multi_task(
+                task_ids, task_names, valid_attempts, invalid_attempts, all_models
+            )
     finally:
         conn.close()
 
