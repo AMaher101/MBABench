@@ -60,9 +60,11 @@ DEFAULT_MODELS: list[str] = [
 DEFAULT_MODELS_PROMPT_VERSION: dict[str, int] = {
     "openpyxl_openai/gpt-5.4": 1105,
     "openpyxl_anthropic/claude-opus-4-6": 1105,
-    "claude_web": 8,
+    "claude_web": 9,
     "claude_excel_agent": 8,
     "chatgpt_excel_agent": 8,
+    "chatgpt_agent": 9,
+    # "openpyxl_allenai/olmo-3.1-32b-instruct": 1105,
 }
 
 # ---------------------------------------------------------------------------
@@ -256,6 +258,36 @@ def print_multi_task(task_ids, task_names, attempts, all_models):
         if missing:
             missing_str = ", ".join(str(t) for t in missing)
             print(f"    Missing tasks: [{missing_str}]")
+
+    # Per-(model, prompt_version) missing tasks
+    print("\n" + "=" * 80)
+    print("Missing tasks per model (by prompt_version)")
+    print("=" * 80)
+
+    for model in all_models:
+        pv_tasks: dict[str, set[int]] = {}
+        for tid in task_ids:
+            for row in lookup.get((tid, model), []):
+                pv = row.get("prompt_version")
+                pv_key = str(pv) if pv is not None else "none"
+                pv_tasks.setdefault(pv_key, set()).add(tid)
+
+        if not pv_tasks:
+            print(f"\n  {model}: no valid attempts (missing all {len(task_ids)} tasks)")
+            missing_str = ", ".join(str(t) for t in task_ids)
+            print(f"    Missing tasks: [{missing_str}]")
+            continue
+
+        print(f"\n  {model}:")
+        for pv_key in sorted(pv_tasks):
+            completed = pv_tasks[pv_key]
+            missing = [t for t in task_ids if t not in completed]
+            print(
+                f"    prompt_v={pv_key}: missing {len(missing)}/{len(task_ids)} tasks"
+            )
+            if missing:
+                missing_str = ", ".join(str(t) for t in missing)
+                print(f"      Missing tasks: [{missing_str}]")
 
     # Summary: completion rate per model, broken down by prompt_version
     print("\n" + "=" * 80)
