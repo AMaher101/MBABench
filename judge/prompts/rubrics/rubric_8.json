@@ -8,7 +8,7 @@
     },
     {
       "name": "Starting values",
-      "description": "Check whether the workbook uses the correct input values given in the case context.",
+      "description": "Check whether the workbook uses the correct input values given in the case context. IMPORTANT: If no calculations exist because the work was not completed, this check FAILS.",
       "good": "Workbook uses the correct input values given in the case context.",
       "bad": "Workbook uses incorrect input values given in the case context."
     },
