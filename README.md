@@ -75,7 +75,3 @@ python judge/main_scripts/judge.py -f judge/scratch/test_cases/Bread_And_Butter
 ## Authors
 
 Thomson Yen, Julian Poeltl, Harshith Srinivas Gear, Yilin Meng, Joshua Fan, Adam Shen, Yili Liu, Ali Bauyrzhan, Siri Du, Haoyang Liu, Daniel Guetta, and Hongseok Namkoong (Namkoong Lab).
-
-## License
-
-TODO before public release.
