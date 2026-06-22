@@ -12,39 +12,45 @@ Frontier labs now ship agents that construct entire spreadsheets from high-level
 
 ## How attempts are scored
 
-A correct final number is not enough. Spreadsheets are reviewed and revised by many hands, so MBABench grades each attempt on three dimensions, each with fine-grained criteria from professional practice:
+A correct final number is not enough. Spreadsheets are reviewed and revised by stakeholders, so MBABench grades each attempt on three dimensions, each with fine-grained criteria from professional practice:
 
-| Dimension | What it measures |
-|---|---|
-| Accuracy | Workbook correctness, from the soundness of the underlying computation to the completeness of the required scenario analyses. |
-| Formula | The robustness and interpretability of cell-level computations. |
-| Format | The aspects that affect a spreadsheet's readability and structural clarity. |
+| Dimension | What it measures                                                                                                              |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Accuracy  | Workbook correctness, from the soundness of the underlying computation to the completeness of the required scenario analyses. |
+| Formula   | The robustness and interpretability of cell-level computations.                                                               |
+| Format    | The aspects that affect a spreadsheet's readability and structural clarity.                                                   |
 
 Each dimension breaks down into fine-grained subdimensions with concrete success criteria. The `judge/` suite applies this rubric with an LLM grader and returns a weighted per-dimension and final score from 0 to 100. Its judgments were validated against finance experts and align closely with theirs.
 
-## Three ways an agent can touch Excel
+## Three ways an agent can work on Excel
 
 The same task runs through three interaction surfaces, each emitting one comparable Excel file so a single judge can grade them side by side:
 
-| Surface | How the agent works | Mirrors |
-|---|---|---|
-| `excel-agents-master/` | Drives a live Excel Online session through add-in panels (TabAI, Claude, ChatGPT) | An analyst using AI inside Excel |
-| `gui-agents-master/` | Uploads files into Claude.ai or ChatGPT and downloads the workbook the model returns | How most people use AI today |
-| `cli-agents-master/` | OpenAI API plus an Excel MCP server, headless, LibreOffice for recalculation | Scriptable evaluation at scale |
+| Surface                | How the agent works                                                                  | Mirrors                          |
+| ---------------------- | ------------------------------------------------------------------------------------ | -------------------------------- |
+| `excel-agents-master/` | Drives a live Excel Online session through add-in panels (TabAI, Claude, ChatGPT)    | An analyst using AI inside Excel |
+| `gui-agents-master/`   | Uploads files into Claude.ai or ChatGPT and downloads the workbook the model returns | How most people use AI today     |
+| `cli-agents-master/`   | OpenAI API plus an Excel MCP server, headless, LibreOffice for recalculation         | Scriptable evaluation at scale   |
 
 ## What we found
 
 The Claude family leads the benchmark and produces the most professional-looking outputs in our qualitative review. Even so, the strongest agents frequently fall short of professional finance standards and degrade sharply once a task chains more than a few calculations. Reliable, professional-quality spreadsheet modeling remains out of reach for current agents.
 
+## Data
+
+- Modeloff data are available here: https://huggingface.co/datasets/namkoong-lab/mbabench-modeloff/tree/main
+- FMWC and WSP data are available on https://fmworldcup.com/ and https://www.wallstreetprep.com/
+
+
 ## Repository
 
-| Path | Contents |
-|---|---|
-| `AGENTS.md` | Orientation across the suites and a guide to picking one |
-| `excel-agents-master/` | In-Excel add-in agents (Excel Online via OneDrive) |
-| `gui-agents-master/` | Web chat UI agents (Claude.ai, ChatGPT) |
-| `cli-agents-master/` | Headless API agent (OpenAI plus Excel MCP server) |
-| `judge/` | LLM grader for attempts from any suite |
+| Path                   | Contents                                                 |
+| ---------------------- | -------------------------------------------------------- |
+| `AGENTS.md`            | Orientation across the suites and a guide to picking one |
+| `excel-agents-master/` | In-Excel add-in agents (Excel Online via OneDrive)       |
+| `gui-agents-master/`   | Web chat UI agents (Claude.ai, ChatGPT)                  |
+| `cli-agents-master/`   | Headless API agent (OpenAI plus Excel MCP server)        |
+| `judge/`               | LLM grader for attempts from any suite                   |
 
 Start with `AGENTS.md` for the feature matrix and the "which suite should I pick?" guide, then follow the quickstart in that suite. Each suite produces one Excel file per task; grade them with `judge/`:
 
