@@ -35,6 +35,7 @@ except ImportError:
 
 from .mcp_client import ExcelMCPClient
 from .models_config import MODEL_PRICING, calculate_cost
+from .yaml_trace_logger import YAMLTraceLogger
 
 
 class TaskStatus(Enum):
@@ -80,7 +81,7 @@ class StreamTimeoutError(Exception):
 
 
 class ExcelTaskExecutor:
-    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None):
+    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, summarize_excel_context: bool = False, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None, yaml_trace_logging: bool = False):
         self.excel_client = excel_client
 
         # --- Unified base_url routing ---
@@ -147,7 +148,7 @@ class ExcelTaskExecutor:
             timeout_secs = 180  # 3 minutes default
 
         # Use httpx.Timeout for granular control over read/connect timeouts
-        self.api_timeout = httpx.Timeout(float(timeout_secs), read=60.0, write=60.0, connect=30.0)
+        self.api_timeout = httpx.Timeout(float(timeout_secs), read=float(timeout_secs), write=60.0, connect=30.0)
 
         # Hard timeout for signal.alarm (must be less than cloud NAT timeout ~600s)
         self.hard_timeout_seconds = timeout_secs
@@ -163,9 +164,12 @@ class ExcelTaskExecutor:
         # New context management flags
         self.fresh_context_mode = fresh_context_mode  # Load solution.xlsx each iteration (no history)
         self.enhanced_excel_context = enhanced_excel_context  # Use grid format for Excel files
+        self.summarize_excel_context = summarize_excel_context  # Use workbook summary instead of raw workbook dump
         self.recent_history_count = recent_history_count  # Number of recent tool calls to include in fresh context
         self.max_completion_tokens = max_completion_tokens  # Max tokens for model output (higher for thinking models)
         self.reasoning_effort = reasoning_effort  # For OpenRouter: None, "xhigh", "high", "medium", "low", "minimal", "none"
+        self.yaml_trace_logging = yaml_trace_logging
+        self.yaml_trace_logger: Optional[YAMLTraceLogger] = None
 
         # Check Langfuse configuration
         self.langfuse_enabled = LANGFUSE_ENABLED and all([
@@ -217,6 +221,37 @@ class ExcelTaskExecutor:
         """Recreate OpenAI client to clear stale/dead connections."""
         print("🔄 Recreating OpenAI client with fresh connections...")
         self._create_openai_client()
+
+    def _init_yaml_trace_logger(self, task: TaskExecution) -> None:
+        """Create a per-task YAML trace logger inside the task's log folder."""
+        if not self.yaml_trace_logging:
+            return
+
+        trace_dir = self.logs_dir / task.task_id
+        self.yaml_trace_logger = YAMLTraceLogger(trace_dir)
+        self.yaml_trace_logger.set_run_metadata({
+            "model": self.model,
+            "base_url": self.base_url,
+            "fresh_context_mode": self.fresh_context_mode,
+            "enhanced_excel_context": self.enhanced_excel_context,
+            "summarize_excel_context": self.summarize_excel_context,
+            "recent_history_count": self.recent_history_count,
+            "max_completion_tokens": self.max_completion_tokens,
+            "reasoning_effort": self.reasoning_effort,
+            "yaml_trace_logging": self.yaml_trace_logging,
+            "storage_path": self.excel_client.storage_path,
+        })
+        self.yaml_trace_logger.set_task_metadata({
+            "task_id": task.task_id,
+            "start_time": task.start_time,
+            "max_iterations": task.max_iterations,
+            "user_prompt": task.user_prompt,
+        })
+
+    def _trace_yaml_event(self, event_type: str, payload: Any, iteration: Optional[int] = None) -> None:
+        """Write one event to the YAML trace if tracing is enabled."""
+        if self.yaml_trace_logger:
+            self.yaml_trace_logger.append_event(event_type, payload, iteration=iteration)
 
     def set_max_iterations(self, n: int) -> None:
         """Set the default maximum iterations for new tasks."""
@@ -303,6 +338,9 @@ class ExcelTaskExecutor:
         if not self.context_excels:
             return ""
 
+        if self.summarize_excel_context:
+            return self._extract_excel_summaries()
+        
         if self.enhanced_excel_context:
             # Use enhanced grid format for better context understanding
             all_text = []
@@ -313,6 +351,94 @@ class ExcelTaskExecutor:
         else:
             # Fallback to legacy CSV-like format
             return self._extract_excel_texts_legacy()
+
+    def _extract_excel_summaries(self) -> str:
+        """Extract concise workbook summaries instead of raw workbook dumps."""
+        if not self.context_excels:
+            return ""
+
+        all_text = []
+        for excel_path in self.context_excels:
+            excel_name = Path(excel_path).name
+            try:
+                summary_result = self.excel_client.call_tool(
+                    "summarize_workbook_context",
+                    {
+                        "filename": excel_name,
+                        "row_cap": 200,
+                        "col_cap": 80,
+                        "max_cells": 50_000,
+                    },
+                )
+                summary_payload = summary_result.get("result", summary_result)
+
+                parts = [f"\n{'='*60}\nEXCEL SUMMARY: {excel_name}\n{'='*60}\n"]
+                if isinstance(summary_payload, dict):
+                    sheets = summary_payload.get("sheets", [])
+                    parts.append(f"Workbook sheets ({len(sheets)}): {', '.join(sheet.get('name', 'unknown') for sheet in sheets)}\n")
+                    for sheet in sheets:
+                        sheet_name = sheet.get("name", "unknown")
+                        if sheet.get("empty"):
+                            parts.append(f"\nSheet: {sheet_name} | empty\n")
+                            continue
+
+                        used_range = sheet.get("used_range", "unknown")
+                        total_cells = sheet.get("total_cells", "unknown")
+                        formulas_count = sheet.get("formulas_count", 0)
+                        parts.append(f"\nSheet: {sheet_name}\n")
+                        parts.append(f"- used_range: {used_range}\n")
+                        parts.append(f"- total_cells: {total_cells}\n")
+                        parts.append(f"- formulas_count: {formulas_count}\n")
+
+                        blocks = sheet.get("blocks", [])[:8]
+                        if blocks:
+                            parts.append("- blocks:\n")
+                            for block in blocks:
+                                block_range = block.get("range", "unknown")
+                                header_row = block.get("header_row")
+                                columns = block.get("columns", [])[:6]
+                                column_names = [str(col.get("name", "")) for col in columns if col.get("name")]
+                                parts.append(f"  * {block_range}")
+                                if header_row is not None:
+                                    parts[-1] += f" (header_row={header_row})"
+                                if column_names:
+                                    parts[-1] += f" | columns: {', '.join(column_names)}"
+                                parts[-1] += "\n"
+
+                        tasks = sheet.get("tasks", [])[:8]
+                        if tasks:
+                            parts.append("- task_like_text:\n")
+                            for task_item in tasks:
+                                task_text = str(task_item.get("text", ""))[:240]
+                                if task_text:
+                                    parts.append(f"  * {task_text}\n")
+
+                        refs = sheet.get("references", [])[:12]
+                        if refs:
+                            parts.append("- references:\n")
+                            for ref in refs:
+                                from_cell = ref.get("from", "unknown")
+                                ref_sheet = ref.get("ref_sheet", "unknown")
+                                ref_range = ref.get("ref_range", "unknown")
+                                kind = ref.get("kind", "unknown")
+                                parts.append(f"  * {from_cell} -> {ref_sheet}!{ref_range} [{kind}]\n")
+
+                    cross_refs = summary_payload.get("cross_sheet_references", [])
+                    if cross_refs:
+                        parts.append(f"\nCross-sheet references ({len(cross_refs)} total, first 15 shown):\n")
+                        for ref in cross_refs[:15]:
+                            parts.append(
+                                f"  * {ref.get('from_sheet', 'unknown')}!{ref.get('from_cell', 'unknown')} -> "
+                                f"{ref.get('to_sheet', 'unknown')}!{ref.get('to_range', 'unknown')} [{ref.get('kind', 'unknown')}]\n"
+                            )
+                else:
+                    parts.append(str(summary_payload))
+
+                all_text.append("".join(parts))
+            except Exception as e:
+                all_text.append(f"\n{'='*60}\nEXCEL SUMMARY: {excel_name}\n{'='*60}\nError summarizing file: {str(e)}\n")
+
+        return "\n".join(all_text)
 
     def _extract_excel_texts_legacy(self) -> str:
         """Legacy CSV-like Excel text extraction (for backward compatibility)"""
@@ -780,7 +906,7 @@ class ExcelTaskExecutor:
         except Exception as e:
             print(f"⚠️ Failed to log Anthropic request: {e}")
 
-    def _collect_stream_response(self, stream, timeout_seconds: int = 300) -> Tuple[str, dict]:
+    def _collect_stream_response(self, stream, timeout_seconds: int = 600) -> Tuple[str, dict]:
         """Collect streaming response chunks and return full text + usage info.
 
         Streaming prevents Cloudflare's 100-second idle timeout by receiving
@@ -788,7 +914,7 @@ class ExcelTaskExecutor:
 
         Args:
             stream: The streaming response from OpenAI
-            timeout_seconds: Maximum time to wait for the entire stream (default 5 min)
+            timeout_seconds: Maximum time to wait for the entire stream (default 10 min)
         """
         import time as time_module
 
@@ -797,7 +923,7 @@ class ExcelTaskExecutor:
         start_time = time_module.time()
         last_content_time = start_time
         empty_chunk_count = 0
-        max_empty_chunks = 100  # Detect dead connection after 100 empty chunks
+        max_empty_chunks = 300  # Detect dead connection after 300 empty chunks
 
         try:
             for chunk in stream:
@@ -810,14 +936,17 @@ class ExcelTaskExecutor:
                 # Extract content from delta
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
-                    # Check both content and reasoning (for thinking models like Qwen3-Thinking, OLMo-Think)
+                    # Check both content and reasoning (for thinking models like Gemma4, Qwen3-Thinking, OLMo-Think)
                     has_content = False
                     if delta:
                         if delta.content:
                             response_text += delta.content
                             has_content = True
-                        # For thinking models, reasoning tokens come through delta.reasoning
-                        if hasattr(delta, 'reasoning') and delta.reasoning:
+                        # For thinking models, reasoning tokens come through delta.reasoning, reasoning_content, or thinking
+                        if (hasattr(delta, 'reasoning') and delta.reasoning) or \
+                           (hasattr(delta, 'reasoning_content') and delta.reasoning_content) or \
+                           (hasattr(delta, 'thinking') and delta.thinking) or \
+                           (getattr(delta, 'model_extra', None) and isinstance(delta.model_extra, dict) and 'thinking' in delta.model_extra):
                             # Don't add reasoning to response_text (it's internal thinking)
                             # But count it as activity to prevent idle timeout
                             has_content = True
@@ -974,6 +1103,14 @@ The extracted text from these PDFs will appear below in sections marked like thi
 
         # Enhanced Excel context files (if any)
         if self.context_excels:
+            excel_heading = "ATTACHED EXCEL SUMMARIES" if self.summarize_excel_context else "ATTACHED EXCEL CONTEXT"
+            context += f"\n\n=== {excel_heading} ({len(self.context_excels)}) ===\n"
+            for excel_path in self.context_excels:
+                context += f"- {Path(excel_path).name}\n"
+            # Note: Excel context or summaries will be added at the end via _extract_excel_texts()
+
+        # Enhanced Excel context files (if any)
+        if self.context_excels:
             context += f"\n\n=== ATTACHED EXCEL CONTEXT ({len(self.context_excels)}) ===\n"
             for excel_path in self.context_excels:
                 context += f"- {Path(excel_path).name}\n"
@@ -1012,6 +1149,15 @@ The extracted text from these PDFs will appear below in sections marked like thi
 ✅ Just scroll down and find the "PDF: filename" sections - that's your PDF content!
 ============================================================
 """
+
+        # Note: Excel files are attached to this request as context
+        if self.context_excels:
+            excel_heading = "ATTACHED EXCEL SUMMARIES" if self.summarize_excel_context else "ATTACHED EXCEL FILES"
+            context += f"\n\n=== {excel_heading} ({len(self.context_excels)}) ===\n"
+            for excel_path in self.context_excels:
+                context += f"- {Path(excel_path).name}\n"
+            context += "=== The Excel file content is attached to this message for your analysis ===\n"
+
 
         # Note: Excel files are attached to this request as context
         if self.context_excels:
@@ -1093,11 +1239,38 @@ EXECUTION HISTORY:
 
             # Store the exact prompt for snapshot capture
             self._last_user_message = user_message_content
+            self._trace_yaml_event(
+                "model_input",
+                {
+                    "purpose": "reasoning",
+                    "system_prompt": system_prompt,
+                    "final_user_message": user_message_content,
+                },
+                iteration=task.total_iterations,
+            )
 
             # Use Anthropic direct API if configured (for Claude models with extended thinking)
             if self.use_anthropic_direct:
+                request_snapshot = {
+                    "provider": "anthropic",
+                    "model": self.model,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_message_content}],
+                    "max_tokens": self.max_completion_tokens,
+                    "thinking_budget_tokens": self.thinking_budget_tokens,
+                }
+                self._trace_yaml_event("model_request", request_snapshot, iteration=task.total_iterations)
                 response_text, usage_info = self._call_anthropic_api(
                     system_prompt, user_message_content, task
+                )
+                self._trace_yaml_event(
+                    "model_output",
+                    {
+                        "provider": "anthropic",
+                        "raw_text": response_text,
+                        "usage_info": usage_info,
+                    },
+                    iteration=task.total_iterations,
                 )
                 # Skip to JSON parsing (after the OpenAI try block)
             else:
@@ -1114,8 +1287,11 @@ EXECUTION HISTORY:
                         ],
                         "max_completion_tokens": self.max_completion_tokens,
                         "stream": True,  # Enable streaming to prevent Cloudflare timeout
-                        "stream_options": {"include_usage": True}  # Get token usage in stream
+                        "stream_options": {"include_usage": True}  #,  Get token usage in stream
+                        # "response_format": {"type": "json_object"} # Responses strictly in JSON format
                     }
+                    
+                    self._trace_yaml_event("model_request", request_data, iteration=task.total_iterations)
 
                     # Add reasoning effort for reasoning models (GPT-5 series, o3, etc.)
                     if self.reasoning_effort:
@@ -1160,6 +1336,15 @@ EXECUTION HISTORY:
                     for attempt in range(MAX_RETRIES):
                         try:
                             response_text, usage_info = self._call_api_with_hard_timeout(request_data)
+                            self._trace_yaml_event(
+                                "model_output",
+                                {
+                                    "provider": "openai_compatible",
+                                    "raw_text": response_text,
+                                    "usage_info": usage_info,
+                                },
+                                iteration=task.total_iterations,
+                            )
                             # Log the streamed response
                             self._log_streaming_request(request_data, response_text, usage_info, task.task_id, task.total_iterations)
                             break  # Success, exit retry loop
@@ -1195,7 +1380,8 @@ EXECUTION HISTORY:
                                 {"role": "system", "content": system_prompt},
                                 user_message
                             ],
-                            "max_completion_tokens": self.max_completion_tokens
+                            "max_completion_tokens": self.max_completion_tokens # ,
+                            # "response_format": {"type": "json_object"}
                         }
 
                         # Add Langfuse metadata if enabled
@@ -1214,6 +1400,20 @@ EXECUTION HISTORY:
                         response = self.openai_client.chat.completions.create(**request_data)
                         self._log_openai_request(request_data, response, task.task_id, task.total_iterations)
                         response_text = response.choices[0].message.content or ""
+                        self._trace_yaml_event(
+                            "model_output",
+                            {
+                                "provider": "openai_compatible",
+                                "raw_text": response_text,
+                                "usage_info": {
+                                    "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", None),
+                                    "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", None),
+                                    "total_tokens": getattr(getattr(response, "usage", None), "total_tokens", None),
+                                },
+                                "fallback_mode": True,
+                            },
+                            iteration=task.total_iterations,
+                        )
                     else:
                         raise
             
@@ -1412,6 +1612,13 @@ EXECUTION HISTORY:
                     }, response_text)
 
         except Exception as e:
+            self._trace_yaml_event(
+                "model_error",
+                {
+                    "error": str(e),
+                },
+                iteration=task.total_iterations,
+            )
             return ({
                 "reasoning": f"Error calling reasoning engine: {str(e)}",
                 "action": {"tool_name": "request_clarification", "arguments": {"question": str(e)}},
@@ -1440,6 +1647,17 @@ EXECUTION HISTORY:
         if tool_name == "report_mcp_issue":
             if isinstance(arguments, dict) and "task_id" not in arguments and self.current_execution:
                 arguments = {**arguments, "task_id": self.current_execution.task_id}
+
+        # Auto-fill missing required parameters for set_cell_formula and edit_cells
+        if isinstance(arguments, dict):
+            if tool_name == "set_cell_formula":
+                if "filename" not in arguments or not arguments["filename"]:
+                    arguments["filename"] = "solution.xlsx"
+                if "worksheet_name" not in arguments or not arguments["worksheet_name"]:
+                    arguments["worksheet_name"] = "model_Workings"
+            elif tool_name == "edit_cells":
+                if "filename" not in arguments or not arguments["filename"]:
+                    arguments["filename"] = "solution.xlsx"
 
         # CRITICAL: Detect attempts to use Excel tools on PDF files (Fix #2)
         # Excel tools only work on .xlsx files, NOT .pdf files
@@ -1686,6 +1904,15 @@ EXECUTION HISTORY:
             )
 
         self.current_execution = task
+        self._init_yaml_trace_logger(task)
+        self._trace_yaml_event(
+            "task_started",
+            {
+                "task_id": task.task_id,
+                "start_time": task.start_time,
+                "max_iterations": task.max_iterations,
+            },
+        )
 
         # Create Langfuse root span for this task execution (v3 API)
         if self.langfuse_enabled and self.langfuse_client:
@@ -1731,9 +1958,26 @@ EXECUTION HISTORY:
                 task.total_iterations += 1
 
                 print(f"\n🤖 Iteration {task.total_iterations}/{task.max_iterations}")
+                self._trace_yaml_event(
+                    "iteration_start",
+                    {
+                        "task_status": task.status.value,
+                        "iterations_completed": task.total_iterations,
+                        "max_iterations": task.max_iterations,
+                    },
+                    iteration=task.total_iterations,
+                )
 
                 # Get next action from reasoning engine
                 reasoning_result, raw_text = self._call_reasoning_engine(task)
+                self._trace_yaml_event(
+                    "model_parsed_output",
+                    {
+                        "reasoning_result": reasoning_result,
+                        "raw_text": raw_text,
+                    },
+                    iteration=task.total_iterations,
+                )
 
                 # Print full AI response if verbose mode is enabled
                 if self.verbose:
@@ -1770,6 +2014,14 @@ EXECUTION HISTORY:
                     self._persist_task(task)
                     task.status = TaskStatus.COMPLETED
                     task.final_result = reasoning_result.get("completion_summary", "Task completed")
+                    self._trace_yaml_event(
+                        "task_completed",
+                        {
+                            "final_result": task.final_result,
+                            "reasoning_result": reasoning_result,
+                        },
+                        iteration=task.total_iterations,
+                    )
                     print(f"✅ Task completed: {task.final_result}")
                     # Save final snapshot before exiting loop
                     if self.snapshot_iterations:
@@ -1832,6 +2084,16 @@ EXECUTION HISTORY:
                     )
 
                     print(f"🔧 [{action_idx + 1}/{len(actions_to_execute)}] Executing: {step.tool_name}({step.tool_args})")
+                    self._trace_yaml_event(
+                        "tool_call",
+                        {
+                            "action_number": action_idx + 1,
+                            "tool_name": step.tool_name,
+                            "tool_args": step.tool_args,
+                            "reasoning_result": reasoning_result if action_idx == 0 else None,
+                        },
+                        iteration=task.total_iterations,
+                    )
 
                     # Execute the action with error handling
                     step_start = time.time()
@@ -1860,6 +2122,19 @@ EXECUTION HISTORY:
                         }
                         step.error = str(e)
                         print(f"❌ Tool execution error: {step.error}")
+
+                    self._trace_yaml_event(
+                        "tool_result",
+                        {
+                            "action_number": action_idx + 1,
+                            "tool_name": step.tool_name,
+                            "tool_args": step.tool_args,
+                            "result": step.result,
+                            "error": step.error,
+                            "execution_time": step.execution_time,
+                        },
+                        iteration=task.total_iterations,
+                    )
 
                     # Check for errors
                     if not step.result.get("success", True):
@@ -1956,6 +2231,14 @@ EXECUTION HISTORY:
                     print(f"⚠️ Loop detected: Agent repeating '{step.tool_name}' without progress")
                     task.status = TaskStatus.NEEDS_CLARIFICATION
                     task.error = f"Agent stuck in loop: repeated '{step.tool_name}' {3} times without progress"
+                    self._trace_yaml_event(
+                        "task_loop_detected",
+                        {
+                            "tool_name": step.tool_name,
+                            "task_error": task.error,
+                        },
+                        iteration=task.total_iterations,
+                    )
                     break
 
                 # Save iteration snapshot if enabled
@@ -1966,6 +2249,14 @@ EXECUTION HISTORY:
                 if reasoning_result.get("is_complete", False) and has_pending_actions:
                     task.status = TaskStatus.COMPLETED
                     task.final_result = reasoning_result.get("completion_summary", "Task completed")
+                    self._trace_yaml_event(
+                        "task_completed",
+                        {
+                            "final_result": task.final_result,
+                            "reasoning_result": reasoning_result,
+                        },
+                        iteration=task.total_iterations,
+                    )
                     print(f"✅ Task completed (after executing actions): {task.final_result}")
                     self._persist_task(task)
                     break
@@ -1984,10 +2275,30 @@ EXECUTION HISTORY:
                         task.final_result = summary
                 except Exception:
                     pass
+                self._trace_yaml_event(
+                    "task_failed",
+                    {
+                        "task_error": task.error,
+                        "final_result": task.final_result,
+                    },
+                    iteration=task.total_iterations,
+                )
                 print(f"⏰ Task stopped: reached maximum iterations")
 
             task.end_time = time.time()
             self._persist_task(task)
+            self._trace_yaml_event(
+                "task_finished",
+                {
+                    "status": task.status.value,
+                    "final_result": task.final_result,
+                    "error": task.error,
+                    "end_time": task.end_time,
+                    "total_iterations": task.total_iterations,
+                    "total_cost_usd": task.total_cost_usd,
+                },
+                iteration=task.total_iterations,
+            )
 
             # Add Langfuse scoring for task outcomes (v3 API)
             if self.langfuse_enabled and self._current_trace:
@@ -2050,6 +2361,14 @@ EXECUTION HISTORY:
             task.status = TaskStatus.FAILED
             task.error = str(e)
             task.end_time = time.time()
+            self._trace_yaml_event(
+                "task_exception",
+                {
+                    "error": str(e),
+                    "status": task.status.value,
+                },
+                iteration=task.total_iterations,
+            )
             print(f"💥 Task failed with exception: {str(e)}")
 
             # Add Langfuse scoring for failed task (v3 API)
@@ -2073,6 +2392,12 @@ EXECUTION HISTORY:
                 print(f"⚠️ Warning: Could not flush Langfuse client: {e}")
 
         # Clean up trace reference
+        if self.yaml_trace_logger:
+            try:
+                self.yaml_trace_logger.flush()
+            except Exception:
+                pass
+        self.yaml_trace_logger = None
         self._current_trace = None
 
         return task
@@ -2082,12 +2407,25 @@ EXECUTION HISTORY:
         """Ask the LLM for a concise summary of the work done and current state."""
         try:
             # OpenAI wrapper will automatically create generation for this summary call
+            summary_user_message = self._get_context_prompt(task) + "\n\nReturn only plain text."
+            self._trace_yaml_event(
+                "model_input",
+                {
+                    "purpose": "task_summary",
+                    "system_prompt": (
+                        "You summarize Excel automation progress. Be concise, actionable, and specific. "
+                        "Do NOT propose further actions; only summarize what was accomplished, current sheet(s) created/edited, key ranges touched, and any remaining gaps."
+                    ),
+                    "final_user_message": summary_user_message,
+                },
+                iteration=task.total_iterations,
+            )
             messages = [
                 {"role": "system", "content": (
                     "You summarize Excel automation progress. Be concise, actionable, and specific. "
                     "Do NOT propose further actions; only summarize what was accomplished, current sheet(s) created/edited, key ranges touched, and any remaining gaps."
                 )},
-                {"role": "user", "content": self._get_context_prompt(task) + "\n\nReturn only plain text."},
+                {"role": "user", "content": summary_user_message},
             ]
             request_data = {
                 "model": self.model,
@@ -2106,6 +2444,14 @@ EXECUTION HISTORY:
 
             resp = self.openai_client.chat.completions.create(**request_data)
             self._log_openai_request(request_data, resp, task_id=task.task_id, iteration=task.total_iterations)
+            self._trace_yaml_event(
+                "model_output",
+                {
+                    "purpose": "task_summary",
+                    "raw_text": resp.choices[0].message.content if resp.choices else None,
+                },
+                iteration=task.total_iterations,
+            )
 
             return resp.choices[0].message.content
         except Exception:

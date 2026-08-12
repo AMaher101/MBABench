@@ -53,6 +53,7 @@ class LocalBatchRunner(BatchRunner):
         config.setdefault('results_dir', './results')
         config.setdefault('cleanup_workspace', False)
         config.setdefault('task_type', 'fmwc')  # fmwc or wsp, for template selection
+        config.setdefault('yaml_trace_logging', True)
 
         # Resolve prompt version
         prompt_ver = config.get('prompt_version', DEFAULT_PROMPT_VERSION)
@@ -82,6 +83,7 @@ class LocalBatchRunner(BatchRunner):
         print(f"   Max iterations: {config['max_iterations']}")
         print(f"   Workspaces: {len(config['workspaces'])}")
         print(f"   Results dir: {config['results_dir']}")
+        print(f"   YAML trace logging: {config['yaml_trace_logging']}")
 
         return config
 

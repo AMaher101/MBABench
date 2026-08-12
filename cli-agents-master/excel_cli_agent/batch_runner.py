@@ -199,6 +199,7 @@ class BatchRunner:
                 custom_reasoning=self.custom_reasoning,
                 fresh_context_mode=self.config.get('fresh_context_mode', False),
                 enhanced_excel_context=self.config.get('enhanced_excel_context', True),
+                summarize_excel_context=self.config.get('summarize_excel_context', False),
                 recent_history_count=self.config.get('recent_history_count', 5),
                 max_completion_tokens=self.config.get('max_completion_tokens', DEFAULT_MAX_COMPLETION_TOKENS),
                 reasoning_effort=self.config.get('reasoning_effort', None),
@@ -212,6 +213,7 @@ class BatchRunner:
                 use_openai_direct=self.config.get('use_openai_direct', False),
                 # Versioned system prompt path
                 system_prompt_path=self.config.get('system_prompt_path', None),
+                yaml_trace_logging=self.config.get('yaml_trace_logging', False),
             )
 
             # Configure executor
