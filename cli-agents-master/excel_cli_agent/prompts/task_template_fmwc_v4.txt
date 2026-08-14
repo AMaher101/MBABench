@@ -41,7 +41,7 @@ Never create sheets without the model_ or answers_ prefix.
 
 STEP 3 - BUILD CALCULATIONS:
 - Place all constants in model_Assumptions sheet using edit_cells (NO = prefix)
-- Place calculations in model_Workings sheet using set_cell_formula
+- Place all calculations in model_Workings sheet using set_cell_formula
 - In answers_ sheets, reference model_Workings calculations, not text labels
 - Verify cell types before creating formulas
 

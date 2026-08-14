@@ -81,7 +81,7 @@ class StreamTimeoutError(Exception):
 
 
 class ExcelTaskExecutor:
-    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, summarize_excel_context: bool = False, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None, yaml_trace_logging: bool = False):
+    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, summarize_excel_context: bool = False, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None, yaml_trace_logging: bool = False, formatting_audit_interval: int = 4, formatting_audit_enabled: bool = True):
         self.excel_client = excel_client
 
         # --- Unified base_url routing ---
@@ -207,6 +207,10 @@ class ExcelTaskExecutor:
         self.verbose: bool = False
         # System prompt path override (for versioned prompts)
         self.system_prompt_path = system_prompt_path
+        # Periodic formatting audit control
+        self.formatting_audit_interval: int = formatting_audit_interval
+        self.formatting_audit_enabled: bool = formatting_audit_enabled
+        self._last_formatting_audit_iteration: int = 0
 
     def _create_openai_client(self):
         """Create OpenAI client with current configuration."""
@@ -652,6 +656,138 @@ class ExcelTaskExecutor:
             return "\n=== SOLUTION FILE ===\nNo solution.xlsx found yet. Create it to begin building your Excel model.\n"
 
         return self._format_excel_as_grid(str(solution_path), is_solution=True)
+
+    def _extract_solution_formatting_state(self, excel_path: str = None) -> str:
+        """Extract full cell data, formulas, and formatting attributes from solution.xlsx.
+
+        Used specifically by the periodic Formatting Audit phase to present complete
+        visual and structural state (number formats, font, fill, border, alignment) to LLM.
+        """
+        if excel_path is None:
+            excel_path = str(Path(self.excel_client.storage_path) / "solution.xlsx")
+
+        if not os.path.exists(excel_path):
+            return "No solution.xlsx file found."
+
+        try:
+            from openpyxl import load_workbook
+            from openpyxl.utils import get_column_letter
+
+            wb_formulas = load_workbook(excel_path, data_only=False)
+            wb_data = load_workbook(excel_path, data_only=True)
+
+            text_parts = [f"=== FORMATTING STATE: {Path(excel_path).name} ===\n"]
+
+            for sheet in wb_formulas.worksheets:
+                sheet_name = sheet.title
+                data_sheet = wb_data[sheet_name]
+
+                if sheet.max_row is None or sheet.max_column is None:
+                    text_parts.append(f"\nWorksheet: {sheet_name} (Empty)\n")
+                    continue
+
+                actual_max_row = sheet.max_row
+                actual_max_col = sheet.max_column
+
+                text_parts.append(f"\nWorksheet: '{sheet_name}' (Used Range: A1:{get_column_letter(actual_max_col)}{actual_max_row})\n")
+
+                for row in range(1, actual_max_row + 1):
+                    row_cells = []
+                    for col in range(1, actual_max_col + 1):
+                        col_letter = get_column_letter(col)
+                        cell_addr = f"{col_letter}{row}"
+
+                        formula_cell = sheet.cell(row=row, column=col)
+                        data_cell = data_sheet.cell(row=row, column=col)
+
+                        formula_val = formula_cell.value
+                        calc_val = data_cell.value
+
+                        # Skip cells that are empty and have default formatting
+                        has_custom_style = (
+                            (formula_cell.number_format and formula_cell.number_format != 'General') or
+                            (formula_cell.font and (formula_cell.font.bold or formula_cell.font.italic or (formula_cell.font.color and getattr(formula_cell.font.color, 'rgb', None)))) or
+                            (formula_cell.fill and formula_cell.fill.fill_type) or
+                            (formula_cell.alignment and (formula_cell.alignment.horizontal or formula_cell.alignment.wrap_text)) or
+                            (formula_cell.border and (getattr(formula_cell.border.top, 'style', None) or getattr(formula_cell.border.bottom, 'style', None)))
+                        )
+
+                        if formula_val is None and not has_custom_style:
+                            continue
+
+                        # Value / Formula description
+                        if formula_val is None:
+                            val_str = "[empty]"
+                        elif isinstance(formula_val, str) and formula_val.startswith('='):
+                            val_str = f"{formula_val} [={calc_val}]"
+                        elif isinstance(formula_val, (int, float)):
+                            val_str = str(formula_val)
+                        else:
+                            val_str = f'"{formula_val}"'
+
+                        # Styles description
+                        styles = []
+                        if formula_cell.number_format and formula_cell.number_format != 'General':
+                            styles.append(f"fmt:'{formula_cell.number_format}'")
+
+                        if formula_cell.font:
+                            f_parts = []
+                            if formula_cell.font.bold:
+                                f_parts.append("bold")
+                            if formula_cell.font.italic:
+                                f_parts.append("italic")
+                            if formula_cell.font.color:
+                                try:
+                                    rgb_val = formula_cell.font.color.rgb
+                                    if isinstance(rgb_val, str) and rgb_val:
+                                        f_parts.append(f"color={rgb_val}")
+                                except Exception:
+                                    pass
+                            if f_parts:
+                                styles.append(f"font:{','.join(f_parts)}")
+
+                        if formula_cell.fill and formula_cell.fill.fill_type:
+                            fill_hex = None
+                            if hasattr(formula_cell.fill, 'start_color') and formula_cell.fill.start_color:
+                                try:
+                                    rgb_val = formula_cell.fill.start_color.rgb
+                                    if isinstance(rgb_val, str) and rgb_val:
+                                        fill_hex = rgb_val
+                                except Exception:
+                                    pass
+                            styles.append(f"fill:{fill_hex or formula_cell.fill.fill_type}")
+
+                        if formula_cell.alignment:
+                            a_parts = []
+                            if formula_cell.alignment.horizontal:
+                                a_parts.append(formula_cell.alignment.horizontal)
+                            if formula_cell.alignment.wrap_text:
+                                a_parts.append("wrap")
+                            if a_parts:
+                                styles.append(f"align:{','.join(a_parts)}")
+
+                        if formula_cell.border:
+                            b_parts = []
+                            for side in ['top', 'bottom', 'left', 'right']:
+                                b_obj = getattr(formula_cell.border, side, None)
+                                if b_obj and getattr(b_obj, 'style', None):
+                                    b_parts.append(f"{side}={b_obj.style}")
+                            if b_parts:
+                                styles.append(f"border:{','.join(b_parts)}")
+
+                        style_str = f" | {', '.join(styles)}" if styles else ""
+                        row_cells.append(f"  {cell_addr}: {val_str}{style_str}")
+
+                    if row_cells:
+                        text_parts.append("\n".join(row_cells) + "\n")
+
+            wb_formulas.close()
+            wb_data.close()
+
+            return "".join(text_parts)
+
+        except Exception as e:
+            return f"Error extracting formatting state: {str(e)}"
 
     def _save_iteration_snapshot(self, iteration: int, task: TaskExecution = None):
         """Save solution.xlsx copy and the EXACT prompt the AI saw for this iteration."""
@@ -1213,36 +1349,145 @@ EXECUTION HISTORY:
 
         return False
 
-    def _call_reasoning_engine(self, task: TaskExecution) -> Tuple[Dict[str, Any], str]:
+    def _run_formatting_audit(self, task: TaskExecution, is_final: bool = False) -> Optional[ExecutionStep]:
+        """Run a specialized formatting audit iteration on solution.xlsx.
+
+        Extracts formulas, data, and formatting details, feeds them to the model with
+        formatting_audit_prompt.txt, and executes generated format_cells / edit_cells actions.
+        """
+        solution_path = Path(self.excel_client.storage_path) / "solution.xlsx"
+        if not solution_path.exists():
+            print("🎨 Formatting Audit skipped: solution.xlsx does not exist yet.")
+            return None
+
+        audit_label = "Final Formatting Audit" if is_final else f"Formatting Audit (Iter {task.total_iterations})"
+        print(f"\n🎨 Executing {audit_label}...")
+
+        # Extract full formatting state
+        formatting_state = self._extract_solution_formatting_state(str(solution_path))
+
+        # Load audit prompt template
+        prompt_path = Path(__file__).parent / "prompts" / "formatting_audit_prompt.txt"
+        if not prompt_path.exists():
+            print(f"⚠️ Formatting Audit prompt template not found at {prompt_path}")
+            return None
+
+        audit_template = prompt_path.read_text(encoding="utf-8")
+        audit_user_message = (
+            audit_template
+            .replace("{user_prompt}", task.user_prompt)
+            .replace("{formatting_state}", formatting_state)
+        )
+
+        reasoning_result, raw_text = self._call_reasoning_engine(
+            task,
+            user_message_content=audit_user_message
+        )
+
+        actions_to_execute = reasoning_result.get("actions") or []
+        if not actions_to_execute and reasoning_result.get("action"):
+            actions_to_execute = [reasoning_result.get("action")]
+
+        print(f"💭 Audit Reasoning: {reasoning_result.get('reasoning', 'No audit reasoning provided')}")
+
+        if not actions_to_execute:
+            print("✅ Formatting Audit: solution.xlsx already satisfies all formatting criteria.")
+            self._last_formatting_audit_iteration = task.total_iterations
+            return None
+
+        print(f"🔧 Formatting Audit executing {len(actions_to_execute)} formatting updates...")
+        for action_idx, action in enumerate(actions_to_execute):
+            resolved_tool = action.get("tool") or action.get("tool_name") or "format_cells"
+            resolved_args = action.get("parameters") or action.get("arguments") or {}
+
+            step = ExecutionStep(
+                step_number=len(task.steps) + 1,
+                description=f"Formatting Audit Action {action_idx + 1}/{len(actions_to_execute)}: {resolved_tool}",
+                tool_name=resolved_tool,
+                tool_args=resolved_args,
+                reasoning_json=reasoning_result if action_idx == 0 else None,
+                raw_model_response=raw_text if action_idx == 0 else None
+            )
+
+            self._trace_yaml_event(
+                "tool_call",
+                {
+                    "action_number": action_idx + 1,
+                    "tool_name": step.tool_name,
+                    "tool_args": step.tool_args,
+                    "reasoning_result": reasoning_result if action_idx == 0 else None,
+                    "audit_phase": True,
+                },
+                iteration=task.total_iterations,
+            )
+
+            step_start = time.time()
+            try:
+                step.result = self._execute_action(action)
+                step.execution_time = time.time() - step_start
+                print(f"✅ Audit Action [{action_idx+1}/{len(actions_to_execute)}] {resolved_tool} succeeded")
+            except Exception as e:
+                step.execution_time = time.time() - step_start
+                step.result = {"success": False, "error": str(e)}
+                step.error = str(e)
+                print(f"❌ Audit Action [{action_idx+1}/{len(actions_to_execute)}] failed: {e}")
+
+            self._trace_yaml_event(
+                "tool_result",
+                {
+                    "action_number": action_idx + 1,
+                    "tool_name": step.tool_name,
+                    "tool_args": step.tool_args,
+                    "result": step.result,
+                    "error": step.error,
+                    "execution_time": step.execution_time,
+                    "audit_phase": True,
+                },
+                iteration=task.total_iterations,
+            )
+
+            task.steps.append(step)
+            self._persist_task(task)
+
+        self._last_formatting_audit_iteration = task.total_iterations
+        if self.snapshot_iterations:
+            self._save_iteration_snapshot(task.total_iterations, task)
+
+    def _call_reasoning_engine(self, task: TaskExecution, user_message_content: Optional[str] = None) -> Tuple[Dict[str, Any], str]:
         """Call OpenAI to determine next action.
 
         Returns (parsed_json, raw_text) for auditing.
         """
         try:
             system_prompt = self._get_system_prompt()
-            context_prompt = self._get_context_prompt(task)
+            purpose = "reasoning"
 
-            # Extract PDF and Excel text if they are in context
-            additional_context = ""
-            if self.context_pdfs:
-                pdf_text = self._extract_pdf_texts()
-                additional_context += "\n\n" + pdf_text
-            if self.context_excels:
-                excel_text = self._extract_excel_texts()
-                additional_context += "\n\n" + excel_text
+            if user_message_content is None:
+                context_prompt = self._get_context_prompt(task)
 
-            if additional_context:
-                full_context = context_prompt + additional_context
-                user_message_content = full_context
+                # Extract PDF and Excel text if they are in context
+                additional_context = ""
+                if self.context_pdfs:
+                    pdf_text = self._extract_pdf_texts()
+                    additional_context += "\n\n" + pdf_text
+                if self.context_excels:
+                    excel_text = self._extract_excel_texts()
+                    additional_context += "\n\n" + excel_text
+
+                if additional_context:
+                    full_context = context_prompt + additional_context
+                    user_message_content = full_context
+                else:
+                    user_message_content = context_prompt
             else:
-                user_message_content = context_prompt
+                purpose = "formatting_audit"
 
             # Store the exact prompt for snapshot capture
             self._last_user_message = user_message_content
             self._trace_yaml_event(
                 "model_input",
                 {
-                    "purpose": "reasoning",
+                    "purpose": purpose,
                     "system_prompt": system_prompt,
                     "final_user_message": user_message_content,
                 },
@@ -1760,17 +2005,6 @@ EXECUTION HISTORY:
             if isinstance(arguments, dict) and "task_id" not in arguments and self.current_execution:
                 arguments = {**arguments, "task_id": self.current_execution.task_id}
 
-        # Auto-fill missing required parameters for set_cell_formula and edit_cells
-        if isinstance(arguments, dict):
-            if tool_name == "set_cell_formula":
-                if "filename" not in arguments or not arguments["filename"]:
-                    arguments["filename"] = "solution.xlsx"
-                if "worksheet_name" not in arguments or not arguments["worksheet_name"]:
-                    arguments["worksheet_name"] = "model_Workings"
-            elif tool_name == "edit_cells":
-                if "filename" not in arguments or not arguments["filename"]:
-                    arguments["filename"] = "solution.xlsx"
-
         # CRITICAL: Detect attempts to use Excel tools on PDF files (Fix #2)
         # Excel tools only work on .xlsx files, NOT .pdf files
         excel_tools_with_filename = [
@@ -2138,6 +2372,8 @@ EXECUTION HISTORY:
                     # Save final snapshot before exiting loop
                     if self.snapshot_iterations:
                         self._save_iteration_snapshot(task.total_iterations, task)
+                    if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations:
+                        self._run_formatting_audit(task, is_final=True)
                     break
 
                 # Execute action(s) - support both single action and multiple actions
@@ -2357,6 +2593,11 @@ EXECUTION HISTORY:
                 if self.snapshot_iterations:
                     self._save_iteration_snapshot(task.total_iterations, task)
 
+                # Periodic Formatting Audit Check (after every 4th iteration)
+                if self.formatting_audit_enabled and task.total_iterations % self.formatting_audit_interval == 0 and task.status == TaskStatus.IN_PROGRESS:
+                    if self._last_formatting_audit_iteration != task.total_iterations:
+                        self._run_formatting_audit(task)
+
                 # Deferred completion: if is_complete was true but we had actions to run first
                 if reasoning_result.get("is_complete", False) and has_pending_actions:
                     task.status = TaskStatus.COMPLETED
@@ -2371,6 +2612,8 @@ EXECUTION HISTORY:
                     )
                     print(f"✅ Task completed (after executing actions): {task.final_result}")
                     self._persist_task(task)
+                    if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations:
+                        self._run_formatting_audit(task, is_final=True)
                     break
 
                 # Small delay to prevent overwhelming the system
@@ -2396,6 +2639,9 @@ EXECUTION HISTORY:
                     iteration=task.total_iterations,
                 )
                 print(f"⏰ Task stopped: reached maximum iterations")
+
+            if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.IN_PROGRESS):
+                self._run_formatting_audit(task, is_final=True)
 
             task.end_time = time.time()
             self._persist_task(task)

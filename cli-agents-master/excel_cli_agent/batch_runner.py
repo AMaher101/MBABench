@@ -204,6 +204,10 @@ class BatchRunner:
                 max_completion_tokens=self.config.get('max_completion_tokens', DEFAULT_MAX_COMPLETION_TOKENS),
                 reasoning_effort=self.config.get('reasoning_effort', None),
                 api_timeout_seconds=self.config.get('api_timeout_seconds', None),
+                yaml_trace_logging=self.config.get('yaml_trace_logging', False),
+                # Formatting audit settings
+                formatting_audit_enabled=self.config.get('formatting_audit_enabled', True),
+                formatting_audit_interval=self.config.get('formatting_audit_interval', 4),
                 # Unified base_url (auto-detects OpenAI vs Anthropic)
                 base_url=self.config.get('base_url', None),
                 # Legacy flags (still supported for backward compat)
@@ -213,7 +217,6 @@ class BatchRunner:
                 use_openai_direct=self.config.get('use_openai_direct', False),
                 # Versioned system prompt path
                 system_prompt_path=self.config.get('system_prompt_path', None),
-                yaml_trace_logging=self.config.get('yaml_trace_logging', False),
             )
 
             # Configure executor
