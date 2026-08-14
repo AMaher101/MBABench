@@ -17,7 +17,7 @@ FORMULA TOOL USAGE (CRITICAL):
 - edit_cells is ONLY for text labels and numeric constants, NOT formulas
 - For multiple formulas: use actions array with multiple set_cell_formula calls
 Example WRONG: edit_cells([{"cell": "B2", "value": "=SUM(A1:A10)"}])
-Example RIGHT: set_cell_formula({"cell": "B2", "formula": "=SUM(A1:A10)", filename": "solution.xlsx", "worksheet_name": "model_Workings"})
+Example RIGHT: set_cell_formula({"cell": "B2", "formula": "=SUM(A1:A10)", "filename": "solution.xlsx", "worksheet_name": "model_Workings"})
 
 STEP 1 - READ THE QUESTIONS PDF:
 First, read the "Questions" or "Questions with Answers" PDF file in the workspace.

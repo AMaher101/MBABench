@@ -1587,29 +1587,141 @@ EXECUTION HISTORY:
                 print(f"📋 DEBUG: JSONL parsing successful - merged {len(all_actions)} actions from {len(lines)} lines")
                 return result
 
-            # Hybrid parsing: try standard JSON first, fallback to JSONL for GPT-5.1
+            def _parse_resilient_json(res_text: str) -> Dict[str, Any]:
+                """Resilient parser fallback (Tier 3) for open-weights models like Gemma 4.
+
+                Handles truncated responses (missing closing brackets/braces), structural bracket
+                anomalies (e.g., missing object braces before array bounds), and unescaped quotes using
+                universal stack-based grammar repair and regex partial action recovery.
+                """
+                t = (res_text or "").strip()
+
+                # Stage 1: Primary Bounds Extraction { ... }
+                start = t.find('{')
+                end = t.rfind('}')
+                if start != -1:
+                    candidate = t[start : (end + 1 if end > start else len(t))]
+                    try:
+                        return json.loads(candidate)
+                    except Exception:
+                        pass
+
+                # Stage 2: Universal Stack-Based Auto-Balance / Suffix Repair
+                if start != -1:
+                    s = t[start:]
+                    rebuilt = []
+                    open_stack = []
+                    in_string = False
+                    escape_next = False
+
+                    for ch in s:
+                        if escape_next:
+                            escape_next = False
+                            rebuilt.append(ch)
+                            continue
+                        if ch == '\\' and in_string:
+                            escape_next = True
+                            rebuilt.append(ch)
+                            continue
+                        if ch == '"' and not escape_next:
+                            in_string = not in_string
+                            rebuilt.append(ch)
+                            continue
+                        if in_string:
+                            rebuilt.append(ch)
+                            continue
+
+                        if ch == '{':
+                            open_stack.append('}')
+                            rebuilt.append(ch)
+                        elif ch == '[':
+                            open_stack.append(']')
+                            rebuilt.append(ch)
+                        elif ch == '}':
+                            if open_stack and open_stack[-1] == '}':
+                                open_stack.pop()
+                            rebuilt.append(ch)
+                        elif ch == ']':
+                            # Universal Grammar Rule: If an array closing bracket ] is encountered
+                            # while inside an unclosed object }, pop and insert } first!
+                            while open_stack and open_stack[-1] == '}':
+                                open_stack.pop()
+                                rebuilt.append('}')
+                            if open_stack and open_stack[-1] == ']':
+                                open_stack.pop()
+                            rebuilt.append(ch)
+                        else:
+                            rebuilt.append(ch)
+
+                    # Close any remaining unclosed elements in reverse LIFO order
+                    if in_string:
+                        rebuilt.append('"')
+                    rebuilt.extend(reversed(open_stack))
+
+                    rebuilt_str = "".join(rebuilt)
+                    try:
+                        return json.loads(rebuilt_str)
+                    except Exception:
+                        pass
+
+                # Stage 3: Partial Action Regex Safety Net
+                actions = []
+                reasoning = "Extracted actions via resilient fallback parser"
+
+                pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{.*?\})\s*\}'
+                for m in re.finditer(pattern, t, re.DOTALL):
+                    try:
+                        actions.append({"tool": m.group(1), "parameters": json.loads(m.group(2))})
+                    except Exception:
+                        pass
+
+                if actions:
+                    print(f"📋 DEBUG: Resilient parsing successful - extracted {len(actions)} actions via regex safety net")
+                    return {
+                        "reasoning": reasoning,
+                        "is_complete": False,
+                        "actions": actions
+                    }
+
+                print(f"📋 DEBUG: Resilient parser processed response - 0 actions extracted, returning for native refeed loop")
+                return {
+                    "reasoning": "Resilient parser processed response (0 actions extracted)",
+                    "is_complete": False,
+                    "actions": []
+                }
+
+            # Multi-Tier Parser Cascade:
             try:
-                # First try standard JSON parsing (GPT-4o, proper behavior)
-                return _extract_json(response_text), response_text
+                # Tier 1: Standard JSON parsing (GPT-4o, Claude 3.5, proper behavior)
+                res1 = _extract_json(response_text)
+                if not res1.get("actions") and not res1.get("is_complete"):
+                    raise ValueError("Standard JSON parsing extracted 0 actions")
+                return res1, response_text
             except Exception as e:
-                # If standard JSON fails, try JSONL parsing (GPT-5.1 workaround)
+                # Tier 2: JSONL parsing fallback (GPT-5.1 / GPT-5.2 workaround)
                 try:
                     print(f"📋 DEBUG: Standard JSON failed, attempting JSONL parsing...")
-                    return _parse_jsonl_response(response_text), response_text
+                    res2 = _parse_jsonl_response(response_text)
+                    if not res2.get("actions") and not res2.get("is_complete"):
+                        raise ValueError("JSONL parsing extracted 0 actions")
+                    return res2, response_text
                 except Exception as jsonl_error:
-                    print(f"📋 DEBUG: JSONL parsing also failed: {str(jsonl_error)}")
-                    # Both parsers failed, continue with original error handling
-                    print(f"📋 DEBUG: JSON parsing failed with error: {str(e)}")
-                    print(f"📋 DEBUG: Response length: {len(response_text)} chars")
-                    print(f"📋 DEBUG: FULL RESPONSE:")
-                    print(response_text)
-                    print(f"📋 DEBUG: END OF RESPONSE")
-                    return ({
-                        "reasoning": f"Failed to parse AI response: {response_text}",
-                        "action": {"tool": "request_clarification", "parameters": {"question": "Failed to parse response"}},
-                        "is_complete": False,
-                        "error": f"JSON parsing error: {str(e)}"
-                    }, response_text)
+                    # Tier 3: Resilient Parser fallback (Gemma 4 / Open-weights / Truncation recovery)
+                    try:
+                        print(f"📋 DEBUG: JSONL parsing yielded 0 actions, attempting Resilient Parser...")
+                        return _parse_resilient_json(response_text), response_text
+                    except Exception as resilient_error:
+                        print(f"📋 DEBUG: All parsing tiers failed: standard ({str(e)}), jsonl ({str(jsonl_error)}), resilient ({str(resilient_error)})")
+                        print(f"📋 DEBUG: Response length: {len(response_text)} chars")
+                        print(f"📋 DEBUG: FULL RESPONSE:")
+                        print(response_text)
+                        print(f"📋 DEBUG: END OF RESPONSE")
+                        return ({
+                            "reasoning": f"Failed to parse AI response: {response_text}",
+                            "actions": [],
+                            "is_complete": False,
+                            "error": f"JSON parsing error: {str(e)}"
+                        }, response_text)
 
         except Exception as e:
             self._trace_yaml_event(

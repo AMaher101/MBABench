@@ -808,8 +808,66 @@ ERROR RECOVERY GUIDELINES:
 4. On tool argument errors: check TOOL SIGNATURES, NAMING RULES, and FORMULA RULES above.
 5. On any tool error: read the message carefully, adjust approach, try a different method.
 
+RESPONSE FORMAT (STRICT JSON - NO COMMENTS):
+
+For QUESTIONS or direct answers (no Excel operations needed):
+{
+  "reasoning": "Understanding of the question and how to answer it",
+  "is_complete": true,
+  "completion_summary": "The complete answer to the question"
+}
+
+For Excel OPERATIONS (single action):
+{
+  "reasoning": "Your step-by-step thinking about what to do next",
+  "action": {
+    "tool": "name_of_mcp_tool_to_call",
+    "parameters": {
+      "arg1": "value1",
+      "arg2": "value2"
+    }
+  },
+  "is_complete": false
+}
+
+For Excel OPERATIONS (multiple sequential actions):
+{
+  "reasoning": "Your plan for the sequence of operations",
+  "actions": [
+    {
+      "tool": "first_tool",
+      "parameters": {"arg1": "value1"}
+    },
+    {
+      "tool": "second_tool",
+      "parameters": {"arg1": "value1"}
+    },
+    {
+      "tool": "third_tool",
+      "parameters": {"arg1": "value1"}
+    }
+  ],
+  "is_complete": false
+}
+
+IMPORTANT: When using "actions" array:
+- Actions execute SEQUENTIALLY in the order provided (action 1, then 2, then 3, etc.)
+- If ANY action fails, execution STOPS and remaining actions are SKIPPED
+- You will receive results for all actions: successes, the failure, and skipped ones
+- Use this for dependent operations (e.g., create worksheet -> add data -> add formulas)
+- Use this to reduce iterations when you can plan multiple steps ahead
+
+For Excel OPERATIONS (completed):
+{
+  "reasoning": "Summary of what was accomplished",
+  "is_complete": true,
+  "completion_summary": "Final summary of the Excel work completed"
+}
+
+CRITICAL: Return ONLY valid JSON. Do NOT include comments like // or /* */. Put all explanations in the "reasoning" or "efficiency_note" fields.
+
 If the task is complete, set is_complete to true and provide a completion_summary.
-If the task is complete, you may also use tool "mark_task_complete" with a completion_summary.
+If you need clarification, use tool "request_clarification" with your question.
 If you need to report an MCP server/interface issue, use tool "report_mcp_issue" with standard arguments.
 
 Use the provided tools to complete the Excel task.
