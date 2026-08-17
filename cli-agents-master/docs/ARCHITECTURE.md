@@ -37,6 +37,7 @@ The architecture has three modular layers. The **agent core** is reusable — sw
 ### Adapting for Other Benchmarks
 
 To use this framework for a different benchmark:
+
 1. **Input layer**: Point `workspaces[].path` to your task folders (local mode), or populate the `tasks` DB table (auto mode)
 2. **Agent core**: Customize prompts in `excel_cli_agent/prompts/` — the system prompt and task template control agent behavior
 3. **Output layer**: Local mode writes to `results_dir/` with `attempts.jsonl` — no infrastructure setup needed
@@ -63,6 +64,7 @@ The agent core is the heart of the system. It doesn't know or care where tasks c
 **TaskExecutor** (`task_executor.py`, ~2400 lines) — The AI reasoning engine. Each iteration: builds context (system prompt + current Excel state + recent history), calls the LLM, parses the JSON/JSONL response into tool calls, executes them via MCP, and loops until the model signals `is_complete` or `max_iterations` is reached. Supports fresh context mode (reload `.xlsx` each iteration to prevent context bloat) and multiple providers via `base_url` auto-detection.
 
 > **To customize:** This is the most impactful component to tune. Key levers:
+>
 > - **`max_iterations`** — How many plan-execute-observe cycles the agent gets. Higher = more thorough but slower and more expensive.
 > - **`fresh_context_mode`** — When `true`, the agent re-reads the `.xlsx` file each iteration instead of accumulating tool call history. Reduces context bloat for long-running tasks.
 > - **`model`** / **`base_url`** — Swap the underlying LLM. Any OpenAI-compatible API works (vLLM, SGLang, OpenRouter, OpenAI). Anthropic direct is also supported with extended thinking.
@@ -79,6 +81,7 @@ Prompts are the single highest-leverage customization point. Small changes to th
 **Task Template** (`prompts/task_template_{source}_v{N}.txt`) — Injected per-task to frame the specific work. Kept intentionally short (~56 lines) — heavier templates consistently degraded performance by encouraging one-shot mega-batches instead of iterative reasoning.
 
 > **To customize:** Create new versioned files (never edit existing ones used in production). Register in `prompt_versions.py`. Key lessons from optimization:
+>
 > - Keep the task template under 60 lines
 > - Rubric criteria work best when stated near-verbatim, not paraphrased into rules
 > - Completion checklists cause mega-batching — avoid them
@@ -90,6 +93,7 @@ The MCP server provides the agent's capabilities — everything the model can ac
 **MCP Server** (`server.py`) — FastMCP-based server that registers all 21 tools. Runs as a subprocess, receives JSON-RPC calls from MCPClient, executes them against the workbook, and returns results.
 
 **Tool Categories** (in `tools/`):
+
 - **File tools** (5) — `create_file`, `list_files`, `copy_file`, `get_file_metadata`, `delete_file`. File creation has a two-layer defense: the system prompt warns it's destructive, and the server hard-blocks duplicate creation.
 - **Worksheet tools** (3) — `list_worksheets`, `create_worksheet`, `delete_worksheet`. Same two-layer defense against duplicate worksheets.
 - **Cell Read tools** (3) — `get_cell_range`, `get_formula`, `search_worksheet`. Non-mutating reads of cell values, formulas, and content search.
@@ -290,15 +294,15 @@ The server is discovered via `import excel_mcp_server` — works whether install
 
 ### MCP Tools (21)
 
-| Category | Tools |
-|----------|-------|
-| **File** | `create_file`, `list_files`, `copy_file`, `get_file_metadata`, `delete_file` |
-| **Worksheet** | `list_worksheets`, `create_worksheet`, `delete_worksheet` |
-| **Cell Read** | `get_cell_range`, `get_formula`, `get_used_range` |
-| **Cell Write** | `edit_cells`, `set_cell_formula` |
-| **Analysis** | `scan_worksheet_structure`, `search_worksheet`, `summarize_workbook_context`, `describe_worksheet` |
-| **Formatting** | `format_cells`, `freeze_panes`, `set_column_width` |
-| **Meta** | `validate_formula`, `report_mcp_issue` |
+| Category             | Tools                                                                                                      |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **File**       | `create_file`, `list_files`, `copy_file`, `get_file_metadata`, `delete_file`                     |
+| **Worksheet**  | `list_worksheets`, `create_worksheet`, `delete_worksheet`                                            |
+| **Cell Read**  | `get_cell_range`, `get_formula`, `get_used_range`                                                    |
+| **Cell Write** | `edit_cells`, `set_cell_formula`                                                                       |
+| **Analysis**   | `scan_worksheet_structure`, `search_worksheet`, `summarize_workbook_context`, `describe_worksheet` |
+| **Formatting** | `format_cells`, `freeze_panes`, `set_column_width`                                                   |
+| **Meta**       | `validate_formula`, `report_mcp_issue`                                                                 |
 
 `set_cell_formula` and `edit_cells` trigger LibreOffice auto-recalculation after every write.
 
@@ -353,6 +357,7 @@ s3://biz-bench/BizbenchV1/
 Prompts are stored as `{type}_v{N}.txt` files in `excel_cli_agent/prompts/`. Each version is registered in the `PROMPT_VERSIONS` dict in `excel_cli_agent/prompt_versions.py`.
 
 The combined version stored in the database:
+
 ```
 prompt_version = system_v * 100 + template_v
 ```
@@ -367,37 +372,40 @@ Example: system prompt v10 + task template v4 = version 1004.
 
 Parameters are set in YAML config files. Items marked with mode indicate which mode uses them.
 
-| Parameter | Type | Default | Mode | Description |
-|-----------|------|---------|------|-------------|
-| **Mode selection** | | | | |
-| `local_mode` | bool | false | local | Enable local mode (no DB/S3) |
-| `auto_mode` | bool | false | auto | Enable auto mode (DB + S3 pipeline) |
-| `batch_name` | string | required | both | Run identifier |
-| **Model** | | | | |
-| `model` | string | required | both | Model slug (e.g. `openai/gpt-4o-mini`) |
-| `base_url` | string | auto-detected | both | API endpoint. Omit for default (OpenRouter if key set, else OpenAI). Set for vLLM/SGLang/Anthropic |
-| `max_completion_tokens` | int | 16000 | both | Max tokens for model output |
-| `reasoning_effort` | string | null | both | `none`, `low`, `medium`, `high`, `xhigh` |
-| `thinking_budget_tokens` | int | null | both | For Anthropic extended thinking |
-| **Task input** | | | | |
-| `workspaces` | list | required | local | `[{path: "./folder/"}]` — folders with task files |
-| `tasks` | list | — | auto | Explicit task names from DB |
-| `task_filter` | object | — | auto | Auto-discover: `{task_source: "fmwc", missing_for_model: true}` |
-| `task_type` | string | `fmwc` | local | Template selection: `fmwc` or `wsp` |
-| **Execution** | | | | |
-| `max_iterations` | int | 30 | both | Max agent iterations per task |
-| `prompt_version` | string | `v10` | both | Prompt version (see `prompt_versions.py`) |
-| `fresh_context_mode` | bool | false | both | Reload xlsx each iteration |
-| `enhanced_excel_context` | bool | true | both | Grid format for Excel context |
-| `api_timeout_seconds` | int | 180 | both | API call timeout |
-| **Output** | | | | |
-| `workspace_base_dir` | string | required | both | Where fresh workspaces are created |
-| `results_dir` | string | `./results` | local | Where results + attempts.jsonl are saved |
-| `cleanup_workspace` | bool | true | both | Delete workspace after completion |
-| **Trial management** | | | | |
-| `max_trials` | int | 7 | auto | Skip task after N attempts |
-| `trials_since` | string | today | auto | Only count attempts after this date |
-| `agent_folder` | string | from model | auto | S3 path + DB agent_model_name |
+| Parameter                     | Type   | Default       | Mode  | Description                                                                                        |
+| ----------------------------- | ------ | ------------- | ----- | -------------------------------------------------------------------------------------------------- |
+| **Mode selection**      |        |               |       |                                                                                                    |
+| `local_mode`                | bool   | false         | local | Enable local mode (no DB/S3)                                                                       |
+| `auto_mode`                 | bool   | false         | auto  | Enable auto mode (DB + S3 pipeline)                                                                |
+| `batch_name`                | string | required      | both  | Run identifier                                                                                     |
+| **Model**               |        |               |       |                                                                                                    |
+| `model`                     | string | required      | both  | Model slug (e.g.`openai/gpt-4o-mini`)                                                            |
+| `base_url`                  | string | auto-detected | both  | API endpoint. Omit for default (OpenRouter if key set, else OpenAI). Set for vLLM/SGLang/Anthropic |
+| `max_completion_tokens`     | int    | 16000         | both  | Max tokens for model output                                                                        |
+| `reasoning_effort`          | string | null          | both  | `none`, `low`, `medium`, `high`, `xhigh`                                                 |
+| `thinking_budget_tokens`    | int    | null          | both  | For Anthropic extended thinking                                                                    |
+| **Task input**          |        |               |       |                                                                                                    |
+| `workspaces`                | list   | required      | local | `[{path: "./folder/"}]` — folders with task files                                               |
+| `tasks`                     | list   | —            | auto  | Explicit task names from DB                                                                        |
+| `task_filter`               | object | —            | auto  | Auto-discover:`{task_source: "fmwc", missing_for_model: true}`                                   |
+| `task_type`                 | string | `fmwc`      | local | Template selection:`fmwc` or `wsp`                                                             |
+| **Execution**           |        |               |       |                                                                                                    |
+| `max_iterations`            | int    | 30            | both  | Max agent iterations per task                                                                      |
+| `prompt_version`            | string | `v10`       | both  | Prompt version (see`prompt_versions.py`)                                                         |
+| `fresh_context_mode`        | bool   | false         | both  | Reload xlsx each iteration                                                                         |
+| `enhanced_excel_context`    | bool   | true          | both  | Grid format for Excel context                                                                      |
+| `summarize_excel_context`   | bool   | false         | both  | Summarize Excel context                                                                            |
+| `api_timeout_seconds`       | int    | 180           | both  | API call timeout                                                                                   |
+| `formatting_audit`         | bool   | false         | both  | Run periodic formatting audit on outputs                                                           |
+| `formatting_audit_interval` | int    | 5             | both  | Iteration interval for formatting audit                                                            |
+| **Output**              |        |               |       |                                                                                                    |
+| `workspace_base_dir`        | string | required      | both  | Where fresh workspaces are created                                                                 |
+| `results_dir`               | string | `./results` | local | Where results + attempts.jsonl are saved                                                           |
+| `cleanup_workspace`         | bool   | true          | both  | Delete workspace after completion                                                                  |
+| **Trial management**    |        |               |       |                                                                                                    |
+| `max_trials`                | int    | 7             | auto  | Skip task after N attempts                                                                         |
+| `trials_since`              | string | today         | auto  | Only count attempts after this date                                                                |
+| `agent_folder`              | string | from model    | auto  | S3 path + DB agent_model_name                                                                      |
 
 ### Local Mode Example
 

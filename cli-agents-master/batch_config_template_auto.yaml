@@ -49,7 +49,7 @@ yaml_trace_logging: true              # Log model inputs/outputs to YAML files i
 summarize_excel_context: false        # Summarize starting Excel files before sending to model
 
 # Formatting Audit Settings (optional)
-formatting_audit_enabled: false        # Run periodic formatting audit
+formatting_audit: false        # Run periodic formatting audit
 formatting_audit_interval: 6          # Run audit every __ iteration & on completion (default: 5)
 
 

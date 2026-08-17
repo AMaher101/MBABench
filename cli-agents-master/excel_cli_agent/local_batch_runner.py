@@ -55,7 +55,7 @@ class LocalBatchRunner(BatchRunner):
         config.setdefault('task_type', 'fmwc')  # fmwc or wsp, for template selection
         config.setdefault('yaml_trace_logging', True)
         config.setdefault('summarize_excel_context', False)
-        config.setdefault('formatting_audit_enabled', False)
+        config.setdefault('formatting_audit', False)
         config.setdefault('formatting_audit_interval', 5)
 
         # Resolve prompt version
@@ -87,7 +87,7 @@ class LocalBatchRunner(BatchRunner):
         print(f"   Workspaces: {len(config['workspaces'])}")
         print(f"   Results dir: {config['results_dir']}")
         print(f"   YAML trace logging: {config['yaml_trace_logging']}")
-        print(f"   Formatting audit: {config['formatting_audit_enabled']}")
+        print(f"   Formatting audit: {config['formatting_audit']}")
 
         return config
 

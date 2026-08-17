@@ -81,7 +81,7 @@ class StreamTimeoutError(Exception):
 
 
 class ExcelTaskExecutor:
-    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, summarize_excel_context: bool = False, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None, yaml_trace_logging: bool = False, formatting_audit_interval: int = 4, formatting_audit_enabled: bool = True):
+    def __init__(self, excel_client: ExcelMCPClient, api_key: str, model: str = "gpt-5-nano-2025-08-07", custom_reasoning: bool = False, fresh_context_mode: bool = False, enhanced_excel_context: bool = True, summarize_excel_context: bool = False, recent_history_count: int = 5, max_completion_tokens: int = 65535, reasoning_effort: str = None, api_timeout_seconds: int = None, use_anthropic_direct: bool = False, anthropic_api_key: str = None, thinking_budget_tokens: int = None, use_openai_direct: bool = False, system_prompt_path: str = None, base_url: str = None, yaml_trace_logging: bool = False, formatting_audit_interval: int = 4, formatting_audit: bool = False):
         self.excel_client = excel_client
 
         # --- Unified base_url routing ---
@@ -209,7 +209,7 @@ class ExcelTaskExecutor:
         self.system_prompt_path = system_prompt_path
         # Periodic formatting audit control
         self.formatting_audit_interval: int = formatting_audit_interval
-        self.formatting_audit_enabled: bool = formatting_audit_enabled
+        self.formatting_audit: bool = formatting_audit
         self._last_formatting_audit_iteration: int = 0
 
     def _create_openai_client(self):
@@ -2372,7 +2372,7 @@ EXECUTION HISTORY:
                     # Save final snapshot before exiting loop
                     if self.snapshot_iterations:
                         self._save_iteration_snapshot(task.total_iterations, task)
-                    if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations:
+                    if self.formatting_audit and self._last_formatting_audit_iteration != task.total_iterations:
                         self._run_formatting_audit(task, is_final=True)
                     break
 
@@ -2594,7 +2594,7 @@ EXECUTION HISTORY:
                     self._save_iteration_snapshot(task.total_iterations, task)
 
                 # Periodic Formatting Audit Check (after every 4th iteration)
-                if self.formatting_audit_enabled and task.total_iterations % self.formatting_audit_interval == 0 and task.status == TaskStatus.IN_PROGRESS:
+                if self.formatting_audit and task.total_iterations % self.formatting_audit_interval == 0 and task.status == TaskStatus.IN_PROGRESS:
                     if self._last_formatting_audit_iteration != task.total_iterations:
                         self._run_formatting_audit(task)
 
@@ -2612,7 +2612,7 @@ EXECUTION HISTORY:
                     )
                     print(f"✅ Task completed (after executing actions): {task.final_result}")
                     self._persist_task(task)
-                    if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations:
+                    if self.formatting_audit and self._last_formatting_audit_iteration != task.total_iterations:
                         self._run_formatting_audit(task, is_final=True)
                     break
 
@@ -2640,7 +2640,7 @@ EXECUTION HISTORY:
                 )
                 print(f"⏰ Task stopped: reached maximum iterations")
 
-            if self.formatting_audit_enabled and self._last_formatting_audit_iteration != task.total_iterations and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.IN_PROGRESS):
+            if self.formatting_audit and self._last_formatting_audit_iteration != task.total_iterations and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.IN_PROGRESS):
                 self._run_formatting_audit(task, is_final=True)
 
             task.end_time = time.time()

@@ -206,7 +206,7 @@ class BatchRunner:
                 api_timeout_seconds=self.config.get('api_timeout_seconds', None),
                 yaml_trace_logging=self.config.get('yaml_trace_logging', False),
                 # Formatting audit settings
-                formatting_audit_enabled=self.config.get('formatting_audit_enabled', True),
+                formatting_audit=self.config.get('formatting_audit', True),
                 formatting_audit_interval=self.config.get('formatting_audit_interval', 4),
                 # Unified base_url (auto-detects OpenAI vs Anthropic)
                 base_url=self.config.get('base_url', None),

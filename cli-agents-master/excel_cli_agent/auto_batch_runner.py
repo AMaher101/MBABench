@@ -107,7 +107,7 @@ class AutoBatchRunner(BatchRunner):
         config.setdefault('trials_since', date.today().isoformat())
         config.setdefault('yaml_trace_logging', True)
         config.setdefault('summarize_excel_context', False)
-        config.setdefault('formatting_audit_enabled', False)
+        config.setdefault('formatting_audit', False)
         config.setdefault('formatting_audit_interval', 5)
 
         # Default agent_folder from model name
@@ -138,7 +138,7 @@ class AutoBatchRunner(BatchRunner):
         print(f"   Trials since: {config['trials_since']}")
         print(f"   Workspace base: {config['workspace_base_dir']}")
         print(f"   YAML trace logging: {config['yaml_trace_logging']}")
-        print(f"   Formatting audit: {config['formatting_audit_enabled']}")
+        print(f"   Formatting audit: {config['formatting_audit']}")
 
         return config
 
