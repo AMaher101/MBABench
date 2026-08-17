@@ -1,7 +1,0 @@
-# Retry Test Fake Tasks - Non-existent task names (used by pipeline_fail test)
-# These tasks don't exist in OneDrive, so navigation will fail before the agent runs.
-task_source: "modeloff"
-
-tasks:
-  - "FAKE_TASK_DOES_NOT_EXIST_001"
-  - "FAKE_TASK_DOES_NOT_EXIST_002"

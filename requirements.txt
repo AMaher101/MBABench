@@ -1,0 +1,27 @@
+# Python Version: Python 3.10 or 3.11 recommended
+
+# --- Core Python Dependencies (Required for all runs) ---
+mcp>=1.2.0,<=1.28.1             
+openpyxl>=3.1.0,<=3.1.5         
+openai>=1.0.0,<=2.45.0          
+python-dotenv>=1.0.0,<=1.2.2    
+pypdf>=3.0.0,<=6.14.2           
+httpx>=0.27.0,<=0.28.1          
+PyYAML>=6.0.0,<=6.0.3           
+pydantic>=2.0.0,<=2.13.4        
+
+# --- Mode-Specific Dependencies ---
+anthropic>=0.40.0,<=0.116.0   # Required if evaluating Anthropic Claude models directly
+sqlalchemy>=2.0.0,<=2.0.51    # Required for auto-batch runner with PostgreSQL database
+psycopg2-binary>=2.9.0        # PostgreSQL driver for SQLAlchemy database connection
+boto3>=1.30.0,<=1.43.46       # Required for downloading tasks/uploading results to AWS S3
+langfuse>=2.0.0,<=4.14.0      # Required if Langfuse observability/tracing is enabled
+
+# --- Optional Dependencies ---
+langchain>=0.2.0,<=0.2.76        
+langchain-openai>=0.1.0,<=0.3.5  
+
+# --- System Dependencies (NOT installed via pip) ---
+# LibreOffice is REQUIRED for headless Excel formula recalculation (IRR, PMT, XNPV, etc.):
+# Debian/Ubuntu install command:
+#   sudo apt-get update && sudo apt-get install -y libreoffice python3-uno

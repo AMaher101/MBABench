@@ -1,6 +1,0 @@
-# Retry Test Tasks - 2 real ModelOff tasks (used by success, missing_sheets, timeout tests)
-task_source: "modeloff"
-
-tasks:
-  - "MO13 Round 1 - Sec 1 - MCQ"
-  - "MO14 Round 1 - Sec 1 - MCQ"

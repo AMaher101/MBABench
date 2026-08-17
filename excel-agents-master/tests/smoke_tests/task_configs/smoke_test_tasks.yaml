@@ -1,5 +1,0 @@
-# Smoke Test Tasks — 1 real ModelOff task (already on OneDrive)
-task_source: "modeloff"
-
-tasks:
-  - "MO13 Round 1 - Sec 1 - MCQ"

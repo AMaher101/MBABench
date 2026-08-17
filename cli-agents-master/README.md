@@ -31,6 +31,7 @@ workspace/
 └── agent_logs/           # Detailed execution logs
     ├── openai_requests.csv
     ├── task_execution.log
+    ├── debug_trace.yaml
     └── iteration_*.json
 
 batch_logs/               # Batch run summaries
@@ -79,6 +80,7 @@ enhanced_excel_context: true
 ```
 
 Run:
+
 ```bash
 nohup excel-agent --batch-config my_auto_config.yaml > run.log 2>&1 &
 tail -f run.log  # monitor progress
@@ -148,15 +150,18 @@ prompt_version: "v10"  # uses system_prompt_v10.txt + task_template_fmwc_v4.txt
 The architecture has three modular layers. Swap what you need:
 
 ### Change Agent Behavior (Prompts)
+
 ```
 excel_cli_agent/prompts/
 ├── system_prompt_v10.txt          # Main agent instructions (~866 lines)
 ├── task_template_fmwc_v4.txt      # Task-specific template (FMWC/ModelOff)
 └── task_template_wsp_v1.txt       # Task-specific template (WSP)
 ```
+
 Create a new `_v{N+1}.txt` file and set `prompt_version` in your config. See `docs/EXTENDING.md`.
 
 ### Add Domain-Specific Tools
+
 ```
 excel_mcp_server/tools/
 ├── file_tools.py                  # create_file, list_files, copy_file, ...
@@ -164,9 +169,11 @@ excel_mcp_server/tools/
 ├── analysis_tools.py              # scan_structure, search, summarize
 └── formatting_tools.py            # format_cells, freeze_panes, ...
 ```
+
 Add a new `@mcp.tool()` function. See `docs/EXTENDING.md` for template.
 
 ### Configure Runs
+
 ```
 examples/
 ├── test_local.yaml                # Local mode template (no DB/S3)
@@ -176,6 +183,7 @@ batch_config_template_auto.yaml    # Full auto mode template with all options
 ```
 
 ### Output Format
+
 - **Local mode**: `results_dir/attempts.jsonl` — one JSON line per attempt with model, cost, timing, status
 - **Auto mode**: PostgreSQL `task_attempts` table + S3 file storage
 
@@ -191,11 +199,13 @@ For detailed information, see:
 ## Troubleshooting
 
 **Empty Excel files?** Check that:
+
 - OpenAI API key is set correctly
 - PDF files in workspace are readable
 - Agent completed without hitting max_iterations
 
 **Circular reference errors?** The agent has built-in prevention for:
+
 - Self-referencing formulas
 - Empty worksheet issues
 - Label vs formula confusion

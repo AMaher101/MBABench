@@ -1,7 +1,0 @@
-# Test Task - Single ModelOff task to verify web search is disabled
-# Uses simple test prompts (from template_claude.yaml comments)
-
-task_source: "modeloff"
-
-tasks:
-  - "MO15 Round 1 - Sec 2 - Bread and Butter"
