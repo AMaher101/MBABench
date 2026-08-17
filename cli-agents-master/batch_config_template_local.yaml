@@ -1,0 +1,42 @@
+# Local mode — no DB, no S3. Reads from local folders, saves results locally.
+# Usage: excel-agent --batch-config /user/ahm2193/benchmark_gemma/batch_config_local.yaml
+#
+# 1. Put task files (PDFs, xlsx) in a folder
+# 2. Point workspaces[].path to that folder
+# 3. Results saved to results_dir with attempts.jsonl log
+
+batch_name: "local-test"
+model: "PROVIDER/MODEL_SLUG" 
+local_mode: true
+
+# API endpoint (optional, omit for default)
+# base_url: "http://127.0.0.1:11434/v1"
+
+# Input: folders containing task files
+workspaces:
+  - path: "./my_task_files/"
+
+# Where fresh workspaces are created (agent works here)
+workspace_base_dir: "./workspaces"
+
+# Where final results are saved + attempts.jsonl log
+results_dir: "./results"
+
+# Task type: "fmwc" (default) or "wsp" — selects the task template
+task_type: "fmwc"
+
+# Execution settings
+max_iterations: 20
+prompt_version: "v11"
+max_completion_tokens: 64000
+api_timeout_seconds: 300
+fresh_context_mode: true
+enhanced_excel_context: false
+cleanup_workspace: false              # Keep workspace for inspection
+verbose: true
+yaml_trace_logging: true              # Log model inputs/outputs to YAML files in workspace
+summarize_excel_context: false        # Summarize starting Excel files before sending to model
+
+# Formatting Audit Settings (optional)
+formatting_audit_enabled: true        # Run periodic formatting audit (default: false)
+formatting_audit_interval: 5          # Run audit every __th iteration & on completion (default: 5)

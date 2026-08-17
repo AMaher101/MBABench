@@ -8,8 +8,11 @@ batch_name: "Auto Batch - MODEL_DISPLAY_NAME"
 model: "PROVIDER/MODEL_SLUG"          # OpenRouter model slug (e.g., "openai/gpt-5.2", "qwen/qwen3-235b-a22b-thinking-2507")
 auto_mode: true
 
+# --- API Endpoint ---
+# base_url: "http://127.0.0.1:11434/v1"
+
 # Where to create workspaces (files downloaded from S3 here)
-workspace_base_dir: "~/auto_batch_MODEL_NAME"    # ~ is expanded automatically
+workspace_base_dir: "/shared/share_mala/aidenm/auto_batch_gemma-4-31B/workspaces"
 
 # Agent folder for S3 paths + DB agent_model_name
 # Convention: "openpyxl_{provider}/{model}"
@@ -35,18 +38,26 @@ task_filter:
 
 # --- Model Settings ---
 verbose: true
-max_iterations: 10
+max_iterations: 15
 fresh_context_mode: true
 enhanced_excel_context: true
 recent_history_count: 3
 max_completion_tokens: 64000          # Use 64000 for frontier models, 16000 for smaller models
 api_timeout_seconds: 600
-cleanup_workspace: true                   # Delete workspace after S3 upload (default: true)
+cleanup_workspace: false              # Delete workspace after S3 upload (default: true)
+yaml_trace_logging: true              # Log model inputs/outputs to YAML files in workspace
+summarize_excel_context: false        # Summarize starting Excel files before sending to model
+
+# Formatting Audit Settings (optional)
+formatting_audit_enabled: false        # Run periodic formatting audit
+formatting_audit_interval: 6          # Run audit every __ iteration & on completion (default: 5)
+
 
 # --- API Endpoint ---
 # base_url: auto-detects provider from URL. Omit to use legacy behavior (OpenRouter if key set, else OpenAI).
+# base_url: "http://127.0.0.1:11434/v1".       # Ollama (local)
 # base_url: "http://localhost:8000/v1"         # vLLM / SGLang (local)
-# base_url: "https://openrouter.ai/api/v1"    # OpenRouter
+# base_url: "https://openrouter.ai/api/v1"     # OpenRouter
 # base_url: "https://api.openai.com/v1"        # OpenAI direct
 # base_url: "https://api.anthropic.com"        # Anthropic (auto-detected, uses Anthropic SDK)
 
